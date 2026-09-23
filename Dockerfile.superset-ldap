@@ -1,0 +1,9 @@
+FROM apache/superset:6.0.0
+USER root
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends libldap2-dev libsasl2-dev build-essential python3-dev \
+    && /app/.venv/bin/python -m ensurepip --upgrade \
+    && /app/.venv/bin/python -m pip install --no-cache-dir python-ldap trino psycopg2-binary \
+    && apt-get purge -y --auto-remove build-essential python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+USER superset

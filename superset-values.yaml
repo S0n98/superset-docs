@@ -1,0 +1,147 @@
+image:
+  repository: docker.io/library/superset-ldap
+  tag: "6.0.0"
+  pullPolicy: IfNotPresent
+
+bootstrapScript: |
+  #!/bin/bash
+  if [ ! -f ~/bootstrap ]; then echo "Running Superset bootstrap" > ~/bootstrap; fi
+
+extraSecretEnv:
+  SUPERSET_SECRET_KEY: "<CHANGE ME - generate with: openssl rand -base64 42>"
+
+hostAliases:
+  - hostnames:
+    - trino.local
+    ip: 192.168.2.100
+
+ingress:
+  enabled: true
+  hosts:
+  - superset.local
+  ingressClassName: nginx
+  path: /
+  pathType: Prefix
+
+configOverrides:
+  enable_ldap: |
+    from flask_appbuilder.security.manager import AUTH_LDAP
+
+    AUTH_TYPE = AUTH_LDAP
+    AUTH_USER_REGISTRATION = True
+    AUTH_USER_REGISTRATION_ROLE = "Gamma"
+
+    AUTH_LDAP_SERVER = "ldap://192.168.2.100:3890"
+
+    AUTH_LDAP_SEARCH = "dc=example,dc=com"
+
+    AUTH_LDAP_UID_FIELD = "uid"
+
+    AUTH_LDAP_BIND_USER = "uid=admin,ou=people,dc=example,dc=com"
+    AUTH_LDAP_BIND_PASSWORD = "<lldap admin password, set via LLDAP_LDAP_USER_PASS>"
+
+    AUTH_LDAP_FIRSTNAME_FIELD = "givenName"
+    AUTH_LDAP_LASTNAME_FIELD = "sn"
+    AUTH_LDAP_EMAIL_FIELD = "mail"
+    AUTH_ROLES_MAPPING = {
+        "cn=test,ou=groups,dc=example,dc=com": [
+            "Admin"
+        ],
+        "cn=lldap_admin,ou=groups,dc=example,dc=com": [
+            "Admin"
+        ],
+        "cn=KHCN,ou=groups,dc=example,dc=com": [
+            "KHCN"
+        ],
+        "cn=HN,ou=groups,dc=example,dc=com": [
+            "KHCN", "Region_HN"
+        ],
+        "cn=HCM,ou=groups,dc=example,dc=com": [
+            "KHCN", "Region_HCM"
+        ],
+    }
+
+    AUTH_LDAP_GROUP_FIELD = "memberOf"
+
+    AUTH_ROLES_SYNC_AT_LOGIN = True
+
+    RECAPTCHA_PUBLIC_KEY = None
+    import logging
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    LOG_LEVEL = "DEBUG"
+
+    logging.getLogger("flask_appbuilder").setLevel(logging.DEBUG)
+    logging.getLogger("flask_appbuilder.security").setLevel(logging.DEBUG)
+    logging.getLogger("ldap3").setLevel(logging.DEBUG)
+    logging.getLogger("superset").setLevel(logging.DEBUG)
+
+extraConfigs: {}
+  #import_datasources.yaml: |
+  #  databases:
+  #  - allow_file_upload: true
+  #    allow_ctas: true
+  #    allow_cvas: true
+  #    allow_dml: true
+  #    database_name: Trino
+  #    extra: >-
+  #      {
+  #        "metadata_params": {},
+  #        "engine_params": {"connect_args": {}},
+  #        "metadata_cache_timeout": {},
+  #        "schemas_allowed_for_file_upload": []
+  #      }
+  #    sqlalchemy_uri: "trino://admin@trino.default.svc.cluster.local:8080"
+  #    tables: []
+
+init:
+  enabled: false
+  loadExamples: false
+  createAdmin: true
+  adminUser:
+    username: admin
+    firstname: Superset
+    lastname: Admin
+    email: admin@superset.com
+    password: "<CHANGE ME>"
+
+supersetNode:
+  startupProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 15
+    timeoutSeconds: 1
+    failureThreshold: 180
+    periodSeconds: 5
+    successThreshold: 1
+  connections:
+    redis_host: "superset-redis-headless"
+    redis_port: "6379"
+    db_host: "superset-postgresql"
+    db_port: "5432"
+    db_user: superset
+    db_pass: "<CHANGE ME - must match postgresql.auth.password below>"
+    db_name: superset
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+service:
+  type: ClusterIP
+  port: 8088
+
+postgresql:
+  enabled: true
+  auth:
+    username: superset
+    password: "<CHANGE ME - must match supersetNode.connections.db_pass above>"
+    database: superset
+
+redis:
+  enabled: true
