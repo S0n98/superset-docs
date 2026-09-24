@@ -1,3 +1,8 @@
+# Trimmed to only what this repo's README documents (LDAP auth + RLS). A
+# real deployment's configOverrides may carry other, unrelated entries too
+# (e.g. a custom EVENT_LOGGER for audit shipping) -- add those separately,
+# they don't interact with anything below.
+
 image:
   repository: docker.io/library/superset-ldap
   tag: "6.0.0"
@@ -43,25 +48,25 @@ configOverrides:
     AUTH_LDAP_FIRSTNAME_FIELD = "givenName"
     AUTH_LDAP_LASTNAME_FIELD = "sn"
     AUTH_LDAP_EMAIL_FIELD = "mail"
+
+    # Production note: authorization here is NOT derived from AD/LDAP group
+    # membership (no memberOf lookup). It comes from a plain attribute
+    # already present on the user's own directory entry -- "department" in
+    # this deployment, but the mechanism works for any single-valued
+    # attribute your AD sends back on bind (employeeType, businessCategory,
+    # a custom extensionAttribute, etc). AUTH_LDAP_GROUP_FIELD is not
+    # actually group-specific despite the name -- FAB treats whatever
+    # attribute it names as a list of "role keys" and looks each one up in
+    # AUTH_ROLES_MAPPING below, regardless of whether that attribute is a
+    # real LDAP group reference. See README.md Part A's "Alternative"
+    # callout for the group-membership variant of this same config.
     AUTH_ROLES_MAPPING = {
-        "cn=test,ou=groups,dc=example,dc=com": [
-            "Admin"
-        ],
-        "cn=lldap_admin,ou=groups,dc=example,dc=com": [
-            "Admin"
-        ],
-        "cn=KHCN,ou=groups,dc=example,dc=com": [
-            "KHCN"
-        ],
-        "cn=HN,ou=groups,dc=example,dc=com": [
-            "KHCN", "Region_HN"
-        ],
-        "cn=HCM,ou=groups,dc=example,dc=com": [
-            "KHCN", "Region_HCM"
-        ],
+        "HO": ["Admin"],
+        "HN": ["KHCN", "Region_HN"],
+        "HCM": ["KHCN", "Region_HCM"],
     }
 
-    AUTH_LDAP_GROUP_FIELD = "memberOf"
+    AUTH_LDAP_GROUP_FIELD = "department"
 
     AUTH_ROLES_SYNC_AT_LOGIN = True
 

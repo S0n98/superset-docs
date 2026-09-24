@@ -1,22 +1,35 @@
 # Superset: LDAP Authentication + Row-Level Security
 
 How to stand up Apache Superset 6.0.0 with LDAP authentication, and how to
-drive Superset's Row Level Security (RLS) from attributes the LDAP server
-sends at login time — specifically, LDAP group membership (`memberOf`).
+drive Superset's Row Level Security (RLS) from information the LDAP server
+sends at login time.
+
+**Production note — group membership is not the only, or even the usual,
+source of truth.** The first version of this setup mapped roles from AD/LDAP
+*group membership* (`memberOf`). Real production directories frequently
+don't authorize this way at all: authorization instead comes from a plain
+**attribute already present on the user's own directory entry** —
+`department`, `employeeType`, `businessCategory`, a custom AD
+`extensionAttribute`, whatever your directory team actually populates —
+with no group object, and no group lookup, involved. This repo documents
+**both**, but leads with the attribute-driven version, since that's the one
+that matches how most real AD/LDAP deployments actually grant permissions.
+The underlying mechanism (`AUTH_ROLES_MAPPING`) is identical either way —
+only which attribute Superset reads changes.
 
 This repo documents a working, verified setup: a lightweight LDAP server
 (`lldap`) as the identity source, a thin custom Superset image with the LDAP
 driver installed, Helm values wiring it together, and the exact steps to
-create roles and RLS filters so different LDAP groups see different rows of
-the same dataset.
+create roles and RLS filters so different users see different rows of the
+same dataset based on that attribute.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph LDAP["lldap (test IdP)"]
-        U[users: alice, bob, carol]
-        G["groups: test, KHCN, HN, HCM"]
+    subgraph LDAP["LDAP / AD"]
+        U["user entry: uid=bob
+        department: HN"]
     end
 
     subgraph K8s["Kubernetes: default namespace"]
@@ -26,27 +39,45 @@ flowchart LR
 
     Trino[(Trino: tpch.tiny.nation / region)]
 
-    U -- "bind + memberOf lookup" --> LDAP
+    U -- "bind + attribute lookup" --> LDAP
     SS -- "AUTH_LDAP_SERVER" --> LDAP
     SS -- "roles, RLS filters" --> PG
     SS -- "SQL query, RLS clause appended" --> Trino
 ```
 
-The mechanism in one sentence: **LDAP `memberOf` → `AUTH_ROLES_MAPPING` →
-Superset role → Row Level Security filter scoped to that role.** Nothing
-about RLS is LDAP-specific; LDAP's only job is to deterministically hand a
-user one or more Superset roles at login. RLS then filters by role like it
-would for any other auth backend.
+The mechanism in one sentence: **an LDAP attribute on the user entry →
+`AUTH_ROLES_MAPPING` → Superset role → Row Level Security filter scoped to
+that role.** Nothing about RLS is LDAP-specific, and nothing about
+`AUTH_ROLES_MAPPING` is group-specific either, despite the setting that
+feeds it being named `AUTH_LDAP_GROUP_FIELD` — Flask-AppBuilder just reads
+whichever attribute that name points at, treats each value as a "role key",
+and looks it up in the mapping. Point it at a group-membership attribute
+and you get group-based authorization; point it at any other attribute and
+you get attribute-based authorization, with no other code change. LDAP's
+only job, either way, is to deterministically hand a user one or more
+Superset roles at login — RLS then filters by role exactly like it would
+for any other auth backend.
 
-## Result once set up
+## Result once set up (attribute-driven — the production path)
 
-| LDAP user | LDAP groups (`memberOf`) | Synced Superset roles | Rows visible on the demo dataset |
+| LDAP user | `department` attribute | Synced Superset roles | Rows visible on the demo dataset |
 |---|---|---|---|
-| `alice` | `cn=test` | `Admin` | all regions (unrestricted) |
-| `bob` | `cn=HN`, `cn=KHCN` | `KHCN`, `Region_HN` | only `region_name = 'ASIA'` |
-| `carol` | `cn=HCM`, `cn=KHCN` | `KHCN`, `Region_HCM` | only `region_name = 'EUROPE'` |
+| `admin` (LDAP bind account) | `HO` | `Admin` | all regions (unrestricted) |
+| `alice` | `HO` | `Admin` | all regions (unrestricted) |
+| `bob` | `HN` | `KHCN`, `Region_HN` | only `region_name = 'ASIA'` |
+| `carol` | `HCM` | `KHCN`, `Region_HCM` | only `region_name = 'EUROPE'` |
 
-Verified with the actual Chart Data API response for `bob`:
+No LDAP group is read at all — confirmed from the running pod's debug log,
+which shows Superset requesting `department`, not `memberOf`, on every bind:
+
+```
+DEBUG:flask_appbuilder.security.manager:LDAP search for '(uid=bob)' with fields ['givenName', 'sn', 'mail', 'department'] in scope 'dc=example,dc=com'
+DEBUG:flask_appbuilder.security.manager:LDAP search returned: [('uid=bob,ou=people,dc=example,dc=com', {'department': [b'HN'], ...})]
+DEBUG:flask_appbuilder.security.manager:Calculated new roles for user='uid=bob,ou=people,dc=example,dc=com' as: [Gamma, Region_HN, KHCN]
+```
+
+Verified with the actual Chart Data API response — `bob` sees only Asian
+nations, `carol` only European ones, `alice`/`admin` see everything:
 
 ```json
 {"nation": "INDIA", "region_name": "ASIA"}
@@ -61,9 +92,10 @@ Verified with the actual Chart Data API response for `bob`:
 ## Part A — Stand up the test LDAP server
 
 [lldap](https://github.com/lldap/lldap) is a minimal LDAP server good enough
-for auth testing: it speaks LDAPv3, needs no schema design, and — critically
-for this setup — computes a `memberOf` attribute on user entries from group
-membership, which is what Superset's LDAP group-to-role mapping reads.
+for auth testing: it speaks LDAPv3, needs no schema design, and supports
+adding arbitrary custom attributes to user entries — which is what lets it
+stand in for "our AD sends back a `department`/`employeeType`/custom
+extension attribute" without needing a real AD to test against.
 
 ```bash
 docker run -d --name lldap \
@@ -83,7 +115,7 @@ docker run -d --name lldap \
 - `LLDAP_LDAP_USER_PASS` sets the password for the built-in admin account,
   `uid=admin,ou=people,dc=example,dc=com`.
 
-### Create groups and users
+### Create users
 
 lldap has no LDAP-native way to create entries (no `ldapadd` support) —
 everything is done through its GraphQL API. Get a JWT first:
@@ -92,43 +124,15 @@ everything is done through its GraphQL API. Get a JWT first:
 TOKEN=$(curl -s -X POST http://localhost:17170/auth/simple/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"adminpass"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['token'])")
-```
 
-Create groups (one call per group):
-
-```bash
 gql() { curl -s -X POST http://localhost:17170/api/graphql \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$1"; }
-
-gql '{"query":"mutation{createGroup(name:\"test\"){id}}"}'
-gql '{"query":"mutation{createGroup(name:\"KHCN\"){id}}"}'
-gql '{"query":"mutation{createGroup(name:\"HN\"){id}}"}'
-gql '{"query":"mutation{createGroup(name:\"HCM\"){id}}"}'
 ```
-
-Create users:
 
 ```bash
 gql '{"query":"mutation{createUser(user:{id:\"alice\",email:\"alice@example.com\",firstName:\"Alice\",lastName:\"Admin\"}){id}}"}'
 gql '{"query":"mutation{createUser(user:{id:\"bob\",email:\"bob@example.com\",firstName:\"Bob\",lastName:\"KhcnHN\"}){id}}"}'
 gql '{"query":"mutation{createUser(user:{id:\"carol\",email:\"carol@example.com\",firstName:\"Carol\",lastName:\"KhcnHCM\"}){id}}"}'
-```
-
-List groups to get their numeric ids (needed for the next step):
-
-```bash
-gql '{"query":"{groups{id displayName}}"}'
-```
-
-Add users to groups — `alice → test`, `bob → KHCN + HN`, `carol → KHCN +
-HCM` (substitute the real group ids from the listing above):
-
-```bash
-gql '{"query":"mutation{addUserToGroup(userId:\"alice\",groupId:4){ok}}"}'
-gql '{"query":"mutation{addUserToGroup(userId:\"bob\",groupId:5){ok}}"}'
-gql '{"query":"mutation{addUserToGroup(userId:\"bob\",groupId:7){ok}}"}'
-gql '{"query":"mutation{addUserToGroup(userId:\"carol\",groupId:5){ok}}"}'
-gql '{"query":"mutation{addUserToGroup(userId:\"carol\",groupId:6){ok}}"}'
 ```
 
 Set passwords — the GraphQL API has no password mutation; lldap ships a
@@ -143,7 +147,36 @@ for u in alice bob carol; do
 done
 ```
 
-### Verify `memberOf` is actually returned
+### Add the authorization attribute and set it per user
+
+This is the step that matters for the production scenario: register a new
+attribute on the **user** schema (once, cluster-wide), then set its value on
+each user entry directly — no group object involved anywhere.
+
+```bash
+# Register the attribute once. type STRING, single-valued, visible+editable
+# so it shows up in lldap's own admin UI too.
+gql '{"query":"mutation{addUserAttribute(name:\"department\",attributeType:STRING,isList:false,isVisible:true,isEditable:true){ok}}"}'
+
+# Set it per user (insertAttributes on updateUser). This is the only place
+# each user's authorization value lives -- their own entry.
+gql '{"query":"mutation{updateUser(user:{id:\"admin\",insertAttributes:[{name:\"department\",value:[\"HO\"]}]}){ok}}"}'
+gql '{"query":"mutation{updateUser(user:{id:\"alice\",insertAttributes:[{name:\"department\",value:[\"HO\"]}]}){ok}}"}'
+gql '{"query":"mutation{updateUser(user:{id:\"bob\",insertAttributes:[{name:\"department\",value:[\"HN\"]}]}){ok}}"}'
+gql '{"query":"mutation{updateUser(user:{id:\"carol\",insertAttributes:[{name:\"department\",value:[\"HCM\"]}]}){ok}}"}'
+```
+
+Note the LDAP bind account (`admin`) gets a value too — see the gotcha in
+Part C about why skipping this for "infrastructure" accounts breaks things
+on their very next login.
+
+If your actual AD already has the attribute you need (it usually will —
+`department`, `employeeType`, `co`, `physicalDeliveryOfficeName`, and custom
+`extensionAttribute1`–`15` are common real-world choices), skip this whole
+subsection: there's nothing to register, you just need to know the
+attribute's LDAP name for Part C.
+
+### Verify the attribute is actually returned
 
 This is the one thing to sanity-check before touching Superset at all,
 because Superset's role mapping depends entirely on it:
@@ -151,19 +184,31 @@ because Superset's role mapping depends entirely on it:
 ```bash
 ldapsearch -x -H ldap://127.0.0.1:3890 \
   -D "uid=admin,ou=people,dc=example,dc=com" -w adminpass \
-  -b "dc=example,dc=com" "(uid=bob)" memberOf
+  -b "dc=example,dc=com" "(uid=bob)" department
 ```
 
 Expected:
 
 ```
 dn: uid=bob,ou=people,dc=example,dc=com
-memberOf: cn=HN,ou=groups,dc=example,dc=com
-memberOf: cn=KHCN,ou=groups,dc=example,dc=com
+department: HN
 ```
 
-If this doesn't show `memberOf`, nothing downstream will work — go no
-further until it does.
+If this doesn't show the attribute, nothing downstream will work — go no
+further until it does. Against a real AD, run the equivalent `ldapsearch`
+(or ADUC / `Get-ADUser -Properties <attr>` in PowerShell) as the account
+Superset will bind with, since AD can restrict which attributes a given
+bind account is allowed to read.
+
+### Alternative: mapping from group membership instead
+
+If your directory genuinely does authorize via group membership, the setup
+is the same shape, just reading a different (multi-valued) attribute:
+create groups via `createGroup`, add users to them via `addUserToGroup`,
+and point Superset at `memberOf` instead of a plain attribute — covered in
+Part C. lldap computes `memberOf` on user entries automatically from group
+membership, no extra step needed; verify it the same way:
+`ldapsearch ... "(uid=bob)" memberOf`.
 
 ---
 
@@ -272,22 +317,21 @@ AUTH_LDAP_FIRSTNAME_FIELD = "givenName"
 AUTH_LDAP_LASTNAME_FIELD = "sn"
 AUTH_LDAP_EMAIL_FIELD = "mail"
 
-# The "additional attribute sent with login info from LDAP" that drives RLS:
-# memberOf is read on every login and mapped to Superset roles below.
-AUTH_LDAP_GROUP_FIELD = "memberOf"
+# The attribute read on every login and mapped to Superset roles below.
+# Despite the setting's name, this does NOT have to be a group-membership
+# field -- it can be any attribute your directory returns on the user
+# entry. Here it's "department", a plain attribute with no group object
+# behind it at all. (To authorize from real AD group membership instead,
+# set this to "memberOf" and key AUTH_ROLES_MAPPING by group DNs instead
+# of attribute values -- see the "Alternative" callout in Part A.)
+AUTH_LDAP_GROUP_FIELD = "department"
 AUTH_ROLES_SYNC_AT_LOGIN = True
 
 AUTH_ROLES_MAPPING = {
-    "cn=test,ou=groups,dc=example,dc=com": ["Admin"],
-
-    # The LDAP bind account's own group must be mapped too -- see the
-    # gotcha below. Without this line the bind account loses Admin on
-    # its very next login.
-    "cn=lldap_admin,ou=groups,dc=example,dc=com": ["Admin"],
-
-    "cn=KHCN,ou=groups,dc=example,dc=com": ["KHCN"],
-    "cn=HN,ou=groups,dc=example,dc=com": ["KHCN", "Region_HN"],
-    "cn=HCM,ou=groups,dc=example,dc=com": ["KHCN", "Region_HCM"],
+    # Keys here are values of the `department` attribute, not group DNs.
+    "HO": ["Admin"],
+    "HN": ["KHCN", "Region_HN"],
+    "HCM": ["KHCN", "Region_HCM"],
 }
 ```
 
@@ -296,19 +340,21 @@ AUTH_ROLES_MAPPING = {
 
 `AUTH_ROLES_SYNC_AT_LOGIN = True` means the user's Superset role set is
 **replaced**, not merged, on every login, with whatever
-`AUTH_ROLES_MAPPING` computes from their current `memberOf` value (falling
-back to `AUTH_USER_REGISTRATION_ROLE` if nothing matches). This bit us
-directly: the LDAP bind account (`uid=admin`) is a member of lldap's own
-built-in `lldap_admin` group, which wasn't in `AUTH_ROLES_MAPPING`. The
+`AUTH_ROLES_MAPPING` computes from their current attribute value (falling
+back to `AUTH_USER_REGISTRATION_ROLE` if nothing matches, or if the
+attribute is simply unset on that entry). This bit us directly: the LDAP
+bind account (`uid=admin`) had no `department` value set at first. The
 first time that account logged into Superset through LDAP (which happens
 any time you authenticate as `admin` via the LDAP provider — including just
 to test the setup), its pre-existing `Admin` role was silently stripped
 down to only the default `Gamma` fallback.
 
-**Fix**: map every LDAP group that any account you care about actually
-belongs to, including infrastructure/bind accounts — as shown above with
-`cn=lldap_admin`. If you hit this after the fact, the role has to be
-restored directly:
+**Fix**: make sure every account you care about — including
+infrastructure/bind accounts, and especially any real-AD service account
+Superset itself binds as — actually has the attribute set to a value
+`AUTH_ROLES_MAPPING` covers. (In this setup: `department: HO` on the `admin`
+entry, mapped to `Admin` above.) If you hit this after the fact, the role
+has to be restored directly:
 
 ```sql
 insert into ab_user_role (id, user_id, role_id)
@@ -571,9 +617,12 @@ not auto-create mapped roles.
 
 **A previously-Admin account gets silently downgraded to `Gamma` after
 logging in via LDAP once** — `AUTH_ROLES_SYNC_AT_LOGIN` replaced its role
-set because none of its LDAP groups were in `AUTH_ROLES_MAPPING`. Map every
-group any real account belongs to, not just the "interesting" ones — see
-the `cn=lldap_admin` gotcha in Part C.
+set because that account's `AUTH_LDAP_GROUP_FIELD` value (a group, an
+attribute, whichever you configured) wasn't in `AUTH_ROLES_MAPPING` — often
+because the attribute was simply blank/unset on that particular entry. Set
+the attribute (or group membership) on every real account that needs a
+non-default role, not just the "interesting" ones — see the gotcha in
+Part C.
 
 **`DATASOURCE_SECURITY_ACCESS_ERROR` when a user with the "right" RLS role
 still can't query the dataset** — RLS restricts *rows*, it doesn't grant
