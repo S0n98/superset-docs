@@ -21,7 +21,12 @@ This repo documents a working, verified setup: a lightweight LDAP server
 (`lldap`) as the identity source, a thin custom Superset image with the LDAP
 driver installed, Helm values wiring it together, and the exact steps to
 create roles and RLS filters so different users see different rows of the
-same dataset based on that attribute.
+same dataset based on that attribute. **Part H** covers the same problem
+one layer up the stack — authorizing from a custom **OIDC claim** instead,
+for deployments where Superset sits behind Keycloak/Okta/Azure AD/etc.
+rather than talking to LDAP directly. The mechanism (`AUTH_ROLES_MAPPING`)
+turns out to be exactly the same one; only where the "role key" comes from
+changes.
 
 ## Architecture
 
@@ -598,12 +603,198 @@ Expected after all three have logged in once:
 
 ---
 
+## Part H — Variant: authorization from OIDC claims, not LDAP at all
+
+Everything above assumes Superset talks to LDAP directly. Plenty of real
+deployments don't: Superset sits behind an OIDC identity provider
+(Keycloak, Okta, Azure AD / Entra ID, Auth0, ...) that itself may be backed
+by the same AD/LDAP directory — the IdP's admin configures a "protocol
+mapper" / "claim mapper" that copies an AD attribute (or a group name, or
+anything else the IdP can compute) into a custom claim on the ID token or
+userinfo response. Superset never talks to LDAP in this setup; it only
+ever sees the OIDC claims.
+
+**The good news: the mechanism is identical, just relocated.** FAB's OAuth
+login path supports the exact same `role_keys` → `AUTH_ROLES_MAPPING` →
+role → RLS pipeline as the LDAP path — it just gets `role_keys` from a
+different place: a custom Security Manager method
+(`get_oauth_user_info`) that you write, instead of a built-in
+`AUTH_LDAP_GROUP_FIELD` setting. Confirmed by reading
+`flask_appbuilder/security/manager.py` directly (not guessed): line 1365
+of the installed FAB version does
+`user_role_keys = userinfo.get("role_keys", [])` in the OAuth login path,
+feeding the identical `get_roles_from_keys()` the LDAP path uses at line
+1067. Nothing about `AUTH_ROLES_MAPPING`, role creation (Part E), or RLS
+(Part F) changes — only Part A (identity source) and Part C (auth config)
+do.
+
+### Stand up a lightweight test OIDC provider
+
+[mock-oauth2-server](https://github.com/navikt/mock-oauth2-server) is the
+OIDC analogue of `lldap` here: a single-JAR test IdP purpose-built for
+exactly this — issuing tokens with whatever custom claims you want, with
+no real login UI required for automation.
+
+```bash
+docker run -d --name mock-oidc --restart unless-stopped \
+  -p 8090:8080 \
+  ghcr.io/navikt/mock-oauth2-server:latest
+```
+
+Its discovery document is **request-relative** — it reflects whatever
+host:port you actually used to reach it, not a fixed hostname. That
+matters because Superset's pod reaches this container through the node's
+own IP (the same pattern as `AUTH_LDAP_SERVER` above), not `localhost`:
+
+```bash
+curl -s http://<node-ip>:8090/default/.well-known/openid-configuration | python3 -m json.tool
+# issuer / authorization_endpoint / etc. all come back as <node-ip>:8090,
+# exactly the host actually used for the request
+```
+
+### Configure Superset for OIDC
+
+Needs `authlib` (Superset's OAuth stack), which — like `python-ldap` in
+Part B — is **not** in the base `apache/superset:6.0.0` image. Unlike
+`python-ldap`, it's a pure-Python wheel with no compiler needed, so
+installing it via `bootstrapScript` at pod startup is fine (it won't race
+the startup probe the way a `python-ldap` compile did):
+
+```yaml
+bootstrapScript: |
+  #!/bin/bash
+  if [ ! -f ~/bootstrap ]; then
+    /app/.venv/bin/python -m pip install --no-cache-dir Authlib
+    echo "Running Superset bootstrap" > ~/bootstrap
+  fi
+```
+
+```python
+from flask_appbuilder.security.manager import AUTH_OAUTH
+from superset.security import SupersetSecurityManager
+
+AUTH_TYPE = AUTH_OAUTH
+AUTH_USER_REGISTRATION = True
+AUTH_USER_REGISTRATION_ROLE = "Gamma"
+AUTH_ROLES_SYNC_AT_LOGIN = True
+
+# Identical to the LDAP-variant mapping in Part C.
+AUTH_ROLES_MAPPING = {
+    "HO": ["Admin"],
+    "HN": ["KHCN", "Region_HN"],
+    "HCM": ["KHCN", "Region_HCM"],
+}
+
+OAUTH_PROVIDERS = [
+    {
+        "name": "oidc",
+        "icon": "fa-key",
+        "token_key": "access_token",
+        "remote_app": {
+            "client_id": "superset",
+            "client_secret": "supersetsecret",
+            "api_base_url": "http://<node-ip>:8090/default/",
+            "server_metadata_url": "http://<node-ip>:8090/default/.well-known/openid-configuration",
+            "client_kwargs": {"scope": "openid email profile"},
+        },
+    }
+]
+
+class CustomSsoSecurityManager(SupersetSecurityManager):
+    # The whole mechanism, in one method: pull whatever custom claim your
+    # IdP actually sends -- "department" here, exactly as arbitrary as the
+    # LDAP attribute case -- and hand it back as "role_keys".
+    def get_oauth_user_info(self, provider, resp):
+        if provider == "oidc":
+            me = self.appbuilder.sm.oauth_remotes[provider].get("userinfo")
+            me.raise_for_status()
+            data = me.json()
+            department = data.get("department")
+            name = data.get("name") or ""
+            return {
+                "username": data.get("sub"),
+                "email": data.get("email"),
+                "first_name": name.split(" ")[0] if name else "",
+                "last_name": " ".join(name.split(" ")[1:]) if name else "",
+                "role_keys": [department] if department else [],
+            }
+        return {}
+
+CUSTOM_SECURITY_MANAGER = CustomSsoSecurityManager
+```
+
+`api_base_url` is what `.get("userinfo")` resolves against — it must match
+the provider's actual `userinfo_endpoint`. `server_metadata_url` lets
+authlib auto-discover `authorize_url`/`access_token_url`/`jwks_uri` instead
+of hardcoding each one.
+
+**Note:** `AUTH_TYPE` is a single value — a Superset instance is LDAP *or*
+OAuth, not both at once through this mechanism. Swapping to this config
+replaces the LDAP login entirely; it's not additive.
+
+### Test it — no real browser needed
+
+mock-oauth2-server's "login page" is a plain HTML form (`username` +
+`claims` fields) that POSTs back to the same URL — which means the whole
+authorization-code flow is scriptable with a cookie jar, the same way the
+LDAP tests in Part G were:
+
+```bash
+COOKIES=cookies.txt
+
+# 1. Ask Superset to start an OIDC login -- it redirects to the IdP with a
+#    state/nonce it will later verify, and sets a session cookie to track them.
+LOGIN_REDIRECT=$(curl -s -c $COOKIES -o /dev/null -D - http://localhost:8088/login/oidc \
+  | grep -i '^Location:' | sed 's/Location: //I' | tr -d '\r')
+
+# 2. Instead of a real login page, POST straight to that authorize URL
+#    with the username and the custom claims this "user" should carry.
+CALLBACK=$(curl -s -X POST "$LOGIN_REDIRECT" \
+  --data-urlencode "username=bob" \
+  --data-urlencode 'claims={"department":"HN","email":"bob@example.com","name":"Bob KhcnHN"}' \
+  -D - -o /dev/null | grep -i '^location:' | sed 's/[Ll]ocation: //' | tr -d '\r')
+
+# 3. Follow the IdP's redirect back into Superset's own callback, same
+#    cookie jar so it can validate the state/nonce it stashed in step 1.
+curl -s -c $COOKIES -b $COOKIES "$CALLBACK" -o /dev/null -D -   # -> 302 to "/" means success
+
+# 4. From here it's a normal authenticated session -- same cookie jar,
+#    same CSRF-token dance as Part G.
+curl -s -c $COOKIES -b $COOKIES http://localhost:8088/api/v1/me/
+```
+
+Verified end to end exactly this way: step 4's `/api/v1/me/` confirms
+Superset logged in `bob` (`sub: bob` from the claims in step 2, matched to
+username), and the metadata DB shows the same role sync as the LDAP path:
+
+```
+ bob | Gamma
+ bob | KHCN
+ bob | Region_HN
+```
+
+...and the Chart Data API against the same RLS-protected dataset from Part
+F, using this session's cookie jar instead of a JWT, returns the same
+single row set as the LDAP version — `region_name = 'ASIA'` only. Nothing
+downstream of "which roles does this user have" needed to change at all.
+
+---
+
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'ldap'` at Superset startup** — the
 image doesn't have `python-ldap` installed into the venv Superset actually
 runs under. See Part B; check with
 `docker run --rm <image> python3 -c "import ldap"` before deploying.
+
+**`ModuleNotFoundError: No module named 'authlib'` at Superset startup**
+(OIDC variant, Part H) — same class of problem, different package: the
+base image doesn't bundle `authlib` either, and `AUTH_TYPE = AUTH_OAUTH`
+imports it unconditionally during app init, before any of your own config
+code runs, so there's no way to defer it. Unlike `python-ldap` this one has
+no C extension, so — uniquely among the packages in this repo — it's fine
+to install it via `bootstrapScript` at pod startup rather than baking it
+into the image; see Part H.
 
 **Pod stuck restarting during a heavy `bootstrapScript`, startup probe
 failing with `connection refused`** — the probe is timing out before a
