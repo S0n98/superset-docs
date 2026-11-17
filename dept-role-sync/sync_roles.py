@@ -1,10 +1,11 @@
 """Sync Superset roles from the department API.
 
-Each department becomes a role named "<deptcd> - <deptnm>". The deptcd
-prefix is the role's identity: a role is matched to its department by
-prefix, never by full name, so when deptnm changes upstream the existing
-role is renamed in place (same role id -> user assignments and dashboard
-grants survive the rename).
+Each department becomes a role named "<brcd> - <deptcd> - <deptnm>". The
+"<brcd> - <deptcd> - " prefix is the role's identity (the same deptcd can
+exist in several branches): a role is matched to its department by prefix,
+never by full name, so when deptnm changes upstream the existing role is
+renamed in place (same role id -> user assignments and dashboard grants
+survive the rename).
 
 Departments missing from the API are left untouched (no deletes).
 Stdlib only, so it runs on a stock python image.
@@ -22,7 +23,7 @@ import urllib.parse
 import urllib.request
 
 ROLE_NAME_MAX = 64  # ab_role.name is varchar(64)
-CODE_PREFIX = re.compile(r"^(\S+) - ")
+KEY_PREFIX = re.compile(r"^(\S+) - (\S+) - ")  # "<brcd> - <deptcd> - "
 
 log = logging.getLogger("dept-role-sync")
 
@@ -91,11 +92,24 @@ def fetch_departments(url, token):
         raise RuntimeError(f"GET {url} -> {e.code}: {e.read().decode(errors='replace')[:500]}") from None
     if not body.get("success"):
         raise RuntimeError(f"department API returned success=false: {body.get('message')}")
-    return body["data"]["departments"]
+    data = body["data"]
+    departments = data["departments"]
+    # brcd is normally on each department; fall back to the response-level
+    # brcd for single-branch responses that only carry it once.
+    for dept in departments:
+        if dept.get("brcd") in (None, "") and data.get("brcd") not in (None, ""):
+            dept["brcd"] = data["brcd"]
+    return departments
+
+
+def dept_key(dept):
+    """(brcd, deptcd) as strings -- leading zeros matter, so never int()."""
+    return str(dept["brcd"]).strip(), str(dept["deptcd"]).strip()
 
 
 def role_name(dept):
-    name = f"{str(dept['deptcd']).strip()} - {dept['deptnm'].strip()}"
+    brcd, deptcd = dept_key(dept)
+    name = f"{brcd} - {deptcd} - {dept['deptnm'].strip()}"
     if len(name) > ROLE_NAME_MAX:
         log.warning("truncating role name to %d chars: %s", ROLE_NAME_MAX, name)
         name = name[:ROLE_NAME_MAX]
@@ -147,27 +161,32 @@ class Superset:
 
 
 def sync(departments, ss, dry_run):
-    by_code = {}
+    by_key = {}
     for role in ss.roles():
-        m = CODE_PREFIX.match(role["name"])
+        m = KEY_PREFIX.match(role["name"])
         if m:
-            by_code.setdefault(m.group(1), []).append(role)
+            by_key.setdefault((m.group(1), m.group(2)), []).append(role)
 
     stats = {"created": 0, "renamed": 0, "unchanged": 0, "skipped": 0}
     seen = set()
     for dept in departments:
-        code = str(dept["deptcd"]).strip()
-        if code in seen:
-            log.warning("deptcd %s appears twice in API response, using first", code)
+        if dept.get("brcd") in (None, "") or dept.get("deptcd") in (None, ""):
+            log.error("department without brcd/deptcd, skipping: %s", dept)
             stats["skipped"] += 1
             continue
-        seen.add(code)
+        key = dept_key(dept)
+        label = "%s - %s" % key
+        if key in seen:
+            log.warning("brcd/deptcd %s appears twice in API response, using first", label)
+            stats["skipped"] += 1
+            continue
+        seen.add(key)
         desired = role_name(dept)
-        existing = by_code.get(code, [])
+        existing = by_key.get(key, [])
 
         if len(existing) > 1:
-            log.error("deptcd %s matches several roles %s -- fix by hand, skipping",
-                      code, [r["name"] for r in existing])
+            log.error("%s matches several roles %s -- fix by hand, skipping",
+                      label, [r["name"] for r in existing])
             stats["skipped"] += 1
         elif not existing:
             log.info("create  %s", desired)

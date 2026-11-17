@@ -2,7 +2,7 @@
 # corporate CA, credentials from Vault. Adjust names/paths to your setup.
 image:
   repository: registry.example.com/data/dept-role-sync
-  tag: "0.1.0"
+  tag: "0.2.0"
 imagePullSecrets:
   - name: registry-creds
 

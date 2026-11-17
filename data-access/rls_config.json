@@ -1,0 +1,20 @@
+{
+  "unrestricted_roles": ["Admin", "DSP_APPLICATION_ADMIN"],
+  "dimensions": [
+    {
+      "name": "area",
+      "column": "area",
+      "group_key": "area",
+      "role_prefix": "AREA_",
+      "values": ["HN", "HCM"]
+    },
+    {
+      "name": "type",
+      "column": "data_type",
+      "group_key": "data_type",
+      "role_prefix": "TYPE_",
+      "values": ["KHCN", "KHDN"]
+    }
+  ],
+  "datasets": "auto"
+}

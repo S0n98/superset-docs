@@ -511,6 +511,24 @@
         "deptnm": "Ban Truyền thông",
         "deptcd": "20",
         "brcd": 1050
+      },
+      {
+        "id": 30001,
+        "deptnm": "Văn phòng Đoàn Thanh niên",
+        "deptcd": "41",
+        "brcd": 1060
+      },
+      {
+        "id": 30002,
+        "deptnm": "Phòng Khách hàng cá nhân",
+        "deptcd": "06",
+        "brcd": 1060
+      },
+      {
+        "id": 30003,
+        "deptnm": "Phòng Khách hàng doanh nghiệp",
+        "deptcd": "07",
+        "brcd": 1060
       }
     ]
   }

@@ -3,11 +3,29 @@
 Keeps Superset roles in step with a department API, so dashboards can be
 granted per department.
 
-Each department `{"deptcd": "41", "deptnm": "Văn phòng Đoàn Thanh niên"}`
-becomes a Superset role named `41 - Văn phòng Đoàn Thanh niên`. When
-`deptnm` changes upstream, the existing role is **renamed in place**: same
-role id, so user assignments and dashboard grants survive the rename.
-Departments that disappear from the API are left alone (no deletes).
+Each department `{"brcd": 1050, "deptcd": "41", "deptnm": "Văn phòng Đoàn
+Thanh niên"}` becomes a Superset role named
+`1050 - 41 - Văn phòng Đoàn Thanh niên`, i.e. `<brcd> - <deptcd> - <deptnm>`.
+The same `deptcd` in another branch is a different role
+(`1060 - 41 - ...`). When `deptnm` changes upstream, the existing role is
+**renamed in place**: same role id, so user assignments and dashboard
+grants survive the rename. Departments that disappear from the API are left
+alone (no deletes).
+
+**API contract:**
+
+```json
+{"success": true,
+ "data": {"departments": [{"brcd": 1050, "deptcd": "41", "deptnm": "..."}, ...]}}
+```
+
+- `brcd` is read from each department. If it's missing, the response-level
+  `data.brcd` is used.
+- Codes are treated as strings, so leading zeros are kept.
+- A department without `brcd` or `deptcd` is skipped with an error.
+
+This is one of three role sources; see
+[../ACCESS-RULES.md](../ACCESS-RULES.md) for the whole access model.
 
 ## How it fits together
 
@@ -15,8 +33,8 @@ Departments that disappear from the API are left alone (no deletes).
 flowchart LR
     API["Department API"] -- "every 15 min" --> Job["dept-role-sync CronJob"]
     Job -- "create / rename roles" --> SS[Superset]
-    User["User login (LDAP attr / OIDC claim: department=41)"] --> SS
-    SS -- "role whose name starts with '41 - '" --> Dash["Dashboards granted to that role"]
+    User["User login (LDAP attrs / OIDC claims: brcd=1050, department=41)"] --> SS
+    SS -- "role whose name starts with '1050 - 41 - '" --> Dash["Dashboards granted to that role"]
 ```
 
 Three pieces:
@@ -24,12 +42,12 @@ Three pieces:
 1. **The sync job** — `sync_roles.py`, packaged by `Dockerfile` and
    deployed as a CronJob by the Helm chart in `chart/dept-role-sync/`. It
    fetches departments, lists Superset roles, matches them to departments
-   by the `"<deptcd> - "` name prefix, then creates missing roles and
-   renames changed ones. Stdlib only, idempotent.
+   by the `"<brcd> - <deptcd> - "` name prefix, then creates missing roles
+   and renames changed ones. Stdlib only, idempotent.
 2. **A custom security manager** in Superset's config (see
-   `../superset-values.yaml`, `DeptRoleSecurityManager`) — overrides
-   `get_roles_from_keys` so a user whose `department` attribute is `41`
-   gets whichever role *currently* starts with `41 - `. The static
+   `../superset-values.yaml`, `DataAccessSecurityManager`). At login, a
+   user whose `brcd` is `1050` and `department` is `41` gets whichever role
+   *currently* starts with `1050 - 41 - `. The static
    `AUTH_ROLES_MAPPING` can't do this, because it's keyed by exact role
    name and the name changes on rename. `get_roles_from_keys` is shared
    by Flask-AppBuilder's LDAP and OAuth login paths, so this works the
@@ -53,8 +71,8 @@ dept-role-sync/
 ## Build the image
 
 ```bash
-docker build -t registry.example.com/data/dept-role-sync:0.1.0 dept-role-sync/
-docker push registry.example.com/data/dept-role-sync:0.1.0
+docker build -t registry.example.com/data/dept-role-sync:0.2.0 dept-role-sync/
+docker push registry.example.com/data/dept-role-sync:0.2.0
 ```
 
 The image runs as uid 10001 with a read-only root filesystem (the chart
@@ -64,9 +82,9 @@ works for a one-off preview.
 > **No registry (this single-node test cluster):** the image was built
 > locally and imported into RKE2's containerd, like `superset-ldap`:
 > ```bash
-> docker save dept-role-sync:0.1.0 -o /tmp/drs.tar
+> docker save dept-role-sync:0.2.0 -o /tmp/drs.tar
 > ctr -a /run/k3s/containerd/containerd.sock -n k8s.io images import --platform linux/amd64 /tmp/drs.tar
-> ctr -a /run/k3s/containerd/containerd.sock -n k8s.io images label docker.io/library/dept-role-sync:0.1.0 io.cri-containerd.image=managed
+> ctr -a /run/k3s/containerd/containerd.sock -n k8s.io images label docker.io/library/dept-role-sync:0.2.0 io.cri-containerd.image=managed
 > ```
 > Disk-pressure image GC can evict it the same way; re-run the above if
 > jobs start failing with `ErrImagePull`.
@@ -203,6 +221,9 @@ vault write auth/kubernetes/role/dept-role-sync \
 `mock-api/server.py` serves `mock-api/departments.json` at
 `GET /api/departments` (Bearer token required). It re-reads the file on
 every request, so editing a `deptnm` there simulates an upstream rename.
+The data is the provided branch 1050 export (84 departments) plus three
+branch-1060 departments that reuse codes `41`, `06` and `07`. Those test
+that the same `deptcd` in two branches gives two roles.
 Set `TLS_CERT`/`TLS_KEY` to serve HTTPS instead.
 
 ```bash
@@ -214,16 +235,24 @@ docker run -d --name dept-api --restart unless-stopped -p 8091:8000 \
 
 ## Verified end to end
 
-On the test cluster (2026-11-17):
+On the test cluster (2026-11-17), with the `<brcd> - <deptcd> - <deptnm>`
+format (job 0.2.0):
 
-- First sync against the 84-department mock data: `created: 84`.
-- Renamed department 41 in the mock JSON, re-synced: `renamed: 1,
-  unchanged: 83` — role id 50 stayed id 50, only its name changed.
-- LDAP user `dave` with `department: 41` logged in and was given role 50
-  under its **new** name; existing static mappings (`bob` → `KHCN`,
-  `Region_HN`) unaffected.
-- Created a dashboard granted only to role 50: `dave` sees it in the
-  dashboard list, `bob` does not.
+- First sync against the 87-department mock data: `created: 87`, including
+  `1050 - 41 - ...` and `1060 - 41 - ...` as separate roles. A re-run
+  gives `unchanged: 87`.
+- Renamed `1050 / 41` in the mock JSON and re-synced: `renamed: 1,
+  unchanged: 86`. Role id 134 kept its id; only its name changed. LDAP
+  user `dave` (`brcd 1050`, `department 41`) logged in again, got role 134
+  under its new name, and still saw the dashboard granted to it. Renamed
+  back afterwards.
+- Dashboard grants and data: `bob` (`brcd 1060`, `department 41`) sees only
+  the dashboard granted to `1060 - 41 - ...` and is denied data through
+  the `1050 - 41` dashboard. This is part of the full access test,
+  `../data-access/demo/test_access.py` (41/41 checks pass).
+
+Job 0.1.0 (`<deptcd> - <deptnm>` format) was verified the same way before
+the format change: create, rename in place, login, dashboard grant.
 
 The Helm chart and image, each case run as a real Job from the CronJob:
 
@@ -248,16 +277,25 @@ vault-agent-init`).
 
 ## Things to know
 
-- **The user's attribute must carry the code exactly as the API sends it**,
-  leading zeros included: `06` matches role `06 - ...`, `6` does not.
+- **The user's `brcd` and `department` must carry the codes exactly as the
+  API sends them**, leading zeros included: `06` matches role
+  `1050 - 06 - ...`, `6` does not.
 - **The prefix is the identity.** If someone hand-edits a role in the
-  Superset UI and breaks the `"41 - "` prefix, the next sync will create a
-  new role for 41. If two roles ever share a prefix, both the sync and the
-  login lookup log a warning and skip that code rather than guess.
+  Superset UI and breaks the `"1050 - 41 - "` prefix, the next sync creates
+  a new role for 1050/41. If two roles ever share a prefix, both the sync
+  and the login lookup log a warning and skip that department rather than
+  guess.
+- **Changing the name format means new roles.** The prefix changed from
+  `<deptcd> - ` (job 0.1.0) to `<brcd> - <deptcd> - ` (0.2.0), so the first
+  0.2.0 run creates new roles rather than renaming the old ones. Re-grant
+  dashboards to the new roles, then delete the old ones. On this test
+  cluster the old roles were simply deleted, since nothing in production
+  used them.
 - **Role names are capped at 64 characters** (`ab_role.name`); longer ones
-  are truncated with a warning. The longest in the mock data is 55.
+  are truncated with a warning. The longest in the mock data is 62
+  (`1050 - ` adds 7).
 - **`AUTH_ROLES_SYNC_AT_LOGIN` is on**, so a user's roles are rebuilt from
-  their attribute at every login — roles added to a user by hand are
+  their attributes at every login — roles added to a user by hand are
   removed on their next login.
 - A brand-new department's role exists only after the next sync run (up to
   15 minutes). A user who logs in before that gets no department role

@@ -1,96 +1,80 @@
-# Superset: LDAP Authentication + Row-Level Security
+# Superset: LDAP Authentication + Attribute-Based Access
 
-How to stand up Apache Superset 6.0.0 with LDAP authentication, and how to
-drive Superset's Row Level Security (RLS) from information the LDAP server
-sends at login time.
+How to run Apache Superset 6.0.0 with LDAP authentication, and how to drive
+**what a user can do, which dashboards they can open and which rows they
+can see** entirely from information the directory sends at login.
 
-**Production note — group membership is not the only, or even the usual,
-source of truth.** The first version of this setup mapped roles from AD/LDAP
-*group membership* (`memberOf`). Real production directories frequently
-don't authorize this way at all: authorization instead comes from a plain
-**attribute already present on the user's own directory entry** —
-`department`, `employeeType`, `businessCategory`, a custom AD
-`extensionAttribute`, whatever your directory team actually populates —
-with no group object, and no group lookup, involved. This repo documents
-**both**, but leads with the attribute-driven version, since that's the one
-that matches how most real AD/LDAP deployments actually grant permissions.
-The underlying mechanism (`AUTH_ROLES_MAPPING`) is identical either way —
-only which attribute Superset reads changes.
+Every user ends up with three kinds of Superset role, all recomputed at
+every login:
 
-This repo documents a working, verified setup: a lightweight LDAP server
-(`lldap`) as the identity source, a thin custom Superset image with the LDAP
-driver installed, Helm values wiring it together, and the exact steps to
-create roles and RLS filters so different users see different rows of the
-same dataset based on that attribute. **Part H** covers the same problem
-one layer up the stack — authorizing from a custom **OIDC claim** instead,
-for deployments where Superset sits behind Keycloak/Okta/Azure AD/etc.
-rather than talking to LDAP directly. The mechanism (`AUTH_ROLES_MAPPING`)
-turns out to be exactly the same one; only where the "role key" comes from
-changes.
+| Kind | Example | Comes from | Controls |
+|---|---|---|---|
+| Functional role | `DSP_DATA_ANALYST` | directory group (`memberOf`) | What they can do: view, build charts, SQL Lab, manage |
+| Department role | `1050 - 41 - Văn phòng Đoàn Thanh niên` | `brcd` + `department` attributes; role synced from the department API | Which dashboards they can open (`DASHBOARD_RBAC`) |
+| Data roles | `AREA_HN`, `TYPE_KHCN` | `area` and `type` attributes | Which rows they see (RLS: `area = 'HN' AND data_type = 'KHCN'`) |
+
+Every rule, decision and open question is listed in
+[ACCESS-RULES.md](ACCESS-RULES.md). The scripts that create the roles and
+RLS filters, and the end-to-end test, are in [`data-access/`](data-access/).
+The department sync job is in [`dept-role-sync/`](dept-role-sync/).
+
+The same model works behind an OIDC IdP (Keycloak, Okta, Azure AD) instead
+of a direct LDAP bind: the attributes become claims. See **Part H**.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     subgraph LDAP["LDAP / AD"]
-        U["user entry: uid=bob
-        department: HN"]
+        U["uid=dave
+        memberOf: dsp_data_analyst
+        brcd: 1050, department: 41
+        area: HN, type: KHCN"]
     end
-
+    API["Department API"] -- "every 15 min" --> Sync["dept-role-sync CronJob"]
+    Sync -- "create / rename '<brcd> - <deptcd> - <deptnm>' roles" --> SS
     subgraph K8s["Kubernetes: default namespace"]
         SS[Superset web/worker pods]
         PG[(Superset metadata Postgres)]
     end
+    Trino[(Trino)]
 
-    Trino[(Trino: tpch.tiny.nation / region)]
-
-    U -- "bind + attribute lookup" --> LDAP
-    SS -- "AUTH_LDAP_SERVER" --> LDAP
-    SS -- "roles, RLS filters" --> PG
-    SS -- "SQL query, RLS clause appended" --> Trino
+    SS -- "bind + read memberOf, brcd, department, area, type" --> LDAP
+    SS -- "roles, dashboard grants, RLS filters" --> PG
+    SS -- "SQL with RLS clause appended" --> Trino
 ```
 
-The mechanism in one sentence: **an LDAP attribute on the user entry →
-`AUTH_ROLES_MAPPING` → Superset role → Row Level Security filter scoped to
-that role.** Nothing about RLS is LDAP-specific, and nothing about
-`AUTH_ROLES_MAPPING` is group-specific either, despite the setting that
-feeds it being named `AUTH_LDAP_GROUP_FIELD` — Flask-AppBuilder just reads
-whichever attribute that name points at, treats each value as a "role key",
-and looks it up in the mapping. Point it at a group-membership attribute
-and you get group-based authorization; point it at any other attribute and
-you get attribute-based authorization, with no other code change. LDAP's
-only job, either way, is to deterministically hand a user one or more
-Superset roles at login — RLS then filters by role exactly like it would
-for any other auth backend.
-
-## Result once set up (attribute-driven — the production path)
-
-| LDAP user | `department` attribute | Synced Superset roles | Rows visible on the demo dataset |
-|---|---|---|---|
-| `admin` (LDAP bind account) | `HO` | `Admin` | all regions (unrestricted) |
-| `alice` | `HO` | `Admin` | all regions (unrestricted) |
-| `bob` | `HN` | `KHCN`, `Region_HN` | only `region_name = 'ASIA'` |
-| `carol` | `HCM` | `KHCN`, `Region_HCM` | only `region_name = 'EUROPE'` |
-
-No LDAP group is read at all — confirmed from the running pod's debug log,
-which shows Superset requesting `department`, not `memberOf`, on every bind:
+At login, `DataAccessSecurityManager` (in the Helm values) turns the
+directory entry into roles:
 
 ```
-DEBUG:flask_appbuilder.security.manager:LDAP search for '(uid=bob)' with fields ['givenName', 'sn', 'mail', 'department'] in scope 'dc=example,dc=com'
-DEBUG:flask_appbuilder.security.manager:LDAP search returned: [('uid=bob,ou=people,dc=example,dc=com', {'department': [b'HN'], ...})]
-DEBUG:flask_appbuilder.security.manager:Calculated new roles for user='uid=bob,ou=people,dc=example,dc=com' as: [Gamma, Region_HN, KHCN]
+memberOf  cn=dsp_data_analyst,...  --AUTH_ROLES_MAPPING-->  DSP_DATA_ANALYST
+brcd + department  1050 / 41       --name prefix match-->   "1050 - 41 - <current deptnm>"
+area  HN                           --AUTH_ROLES_MAPPING-->  AREA_HN   (RLS area = 'HN')
+type  KHCN                         --AUTH_ROLES_MAPPING-->  TYPE_KHCN (RLS data_type = 'KHCN')
+(always)                           --registration role-->   DSP_DATA_VIEWER
 ```
 
-Verified with the actual Chart Data API response — `bob` sees only Asian
-nations, `carol` only European ones, `alice`/`admin` see everything:
+## Result once set up
 
-```json
-{"nation": "INDIA", "region_name": "ASIA"}
-{"nation": "INDONESIA", "region_name": "ASIA"}
-{"nation": "JAPAN", "region_name": "ASIA"}
-{"nation": "CHINA", "region_name": "ASIA"}
-{"nation": "VIETNAM", "region_name": "ASIA"}
-```
+Test users in `lldap` (password `Passw0rd!`), the roles they get, and what
+they see on the demo dataset (5 rows: branches 1050/1070 in HN, 1060 in
+HCM, both data types):
+
+| User | Group → functional role | brcd / dept | area / type | Dashboards | Rows |
+|---|---|---|---|---|---|
+| `alice` | `superset_admins` → Admin | – | – | all | all 5, anywhere |
+| `henry` | `dsp_application_admin` → DSP_APPLICATION_ADMIN | – | – | none (R20 in ACCESS-RULES) | all 5, anywhere; SQL Lab |
+| `dave` | `dsp_data_analyst` → DSP_DATA_ANALYST | 1050 / 41 | HN / KHCN | Demo - 1050 - 41 | HN ∧ KHCN: 2 rows |
+| `carol` | (none) → DSP_DATA_VIEWER | 1050 / 41 | HN / KHDN | Demo - 1050 - 41 | HN ∧ KHDN: 1 row |
+| `bob` | `dsp_data_steward` → DSP_DATA_STEWARD | 1060 / 41 | HCM / KHDN | Demo - 1060 - 41 | HCM ∧ KHDN: 1 row |
+| `erin` | (none) → DSP_DATA_VIEWER | 1050 / 41 | – / – | Demo - 1050 - 41 | 0 rows (deny by default) |
+| `gina` | `dsp_data_analyst` → DSP_DATA_ANALYST | 1050 / 41 | HN / – | Demo - 1050 - 41 | 0 rows (no type) |
+
+`python3 data-access/demo/test_access.py` checks all of this, including
+that non-admins get no data outside their granted dashboards, that viewers
+can't create content and that only admins can use SQL Lab: **41/41 checks
+pass** (2026-11-17). See [`data-access/README.md`](data-access/README.md).
 
 ---
 
@@ -138,13 +122,14 @@ gql() { curl -s -X POST http://localhost:17170/api/graphql \
 gql '{"query":"mutation{createUser(user:{id:\"alice\",email:\"alice@example.com\",firstName:\"Alice\",lastName:\"Admin\"}){id}}"}'
 gql '{"query":"mutation{createUser(user:{id:\"bob\",email:\"bob@example.com\",firstName:\"Bob\",lastName:\"KhcnHN\"}){id}}"}'
 gql '{"query":"mutation{createUser(user:{id:\"carol\",email:\"carol@example.com\",firstName:\"Carol\",lastName:\"KhcnHCM\"}){id}}"}'
+# ...and the same for dave, erin, gina, henry (see the "Result" table)
 ```
 
 Set passwords — the GraphQL API has no password mutation; lldap ships a
 dedicated CLI for it (present inside the container at `/app/lldap_set_password`):
 
 ```bash
-for u in alice bob carol; do
+for u in alice bob carol dave erin gina henry; do
   docker exec lldap /app/lldap_set_password \
     --base-url "http://localhost:17170" \
     --admin-username admin --admin-password adminpass \
@@ -152,68 +137,63 @@ for u in alice bob carol; do
 done
 ```
 
-### Add the authorization attribute and set it per user
+### Add the access attributes and groups
 
-This is the step that matters for the production scenario: register a new
-attribute on the **user** schema (once, cluster-wide), then set its value on
-each user entry directly — no group object involved anywhere.
+Two kinds of directory data feed Superset:
+
+- **Groups** for functional roles. lldap computes `memberOf` on each user
+  automatically.
+- **Plain attributes on the user entry** for the department and the data
+  scope: `brcd`, `department`, `area`, `type`.
 
 ```bash
-# Register the attribute once. type STRING, single-valued, visible+editable
-# so it shows up in lldap's own admin UI too.
-gql '{"query":"mutation{addUserAttribute(name:\"department\",attributeType:STRING,isList:false,isVisible:true,isEditable:true){ok}}"}'
+# Register the attributes once (STRING, single-valued).
+for a in department brcd area type; do
+  gql "{\"query\":\"mutation{addUserAttribute(name:\\\"$a\\\",attributeType:STRING,isList:false,isVisible:true,isEditable:true){ok}}\"}"
+done
 
-# Set it per user (insertAttributes on updateUser). This is the only place
-# each user's authorization value lives -- their own entry.
-gql '{"query":"mutation{updateUser(user:{id:\"admin\",insertAttributes:[{name:\"department\",value:[\"HO\"]}]}){ok}}"}'
-gql '{"query":"mutation{updateUser(user:{id:\"alice\",insertAttributes:[{name:\"department\",value:[\"HO\"]}]}){ok}}"}'
-gql '{"query":"mutation{updateUser(user:{id:\"bob\",insertAttributes:[{name:\"department\",value:[\"HN\"]}]}){ok}}"}'
-gql '{"query":"mutation{updateUser(user:{id:\"carol\",insertAttributes:[{name:\"department\",value:[\"HCM\"]}]}){ok}}"}'
+# Functional-role groups (ids are printed; used by addUserToGroup below).
+for g in superset_admins dsp_application_admin dsp_data_steward dsp_data_analyst dsp_data_viewer; do
+  gql "{\"query\":\"mutation{createGroup(name:\\\"$g\\\"){id}}\"}"
+done
+
+# Per user: attributes...
+gql '{"query":"mutation{updateUser(user:{id:\"dave\",insertAttributes:[{name:\"brcd\",value:[\"1050\"]},{name:\"department\",value:[\"41\"]},{name:\"area\",value:[\"HN\"]},{name:\"type\",value:[\"KHCN\"]}]}){ok}}"}'
+# ...and groups (groupId from createGroup above)
+gql '{"query":"mutation{addUserToGroup(userId:\"dave\",groupId:<dsp_data_analyst id>){ok}}"}'
+gql '{"query":"mutation{addUserToGroup(userId:\"admin\",groupId:<superset_admins id>){ok}}"}'
 ```
 
-Note the LDAP bind account (`admin`) gets a value too — see the gotcha in
-Part C about why skipping this for "infrastructure" accounts breaks things
-on their very next login.
+The LDAP bind account (`admin`) must be in `superset_admins` too; the
+gotcha in Part C explains why. The sync job also logs in as it.
 
-If your actual AD already has the attribute you need (it usually will —
-`department`, `employeeType`, `co`, `physicalDeliveryOfficeName`, and custom
-`extensionAttribute1`–`15` are common real-world choices), skip this whole
-subsection: there's nothing to register, you just need to know the
-attribute's LDAP name for Part C.
+If your AD already has these attributes, under whatever names, skip this
+subsection. The attribute names are configurable in
+`ACCESS_ATTRIBUTES` (Part C).
 
-### Verify the attribute is actually returned
+### Verify the attributes are actually returned
 
-This is the one thing to sanity-check before touching Superset at all,
-because Superset's role mapping depends entirely on it:
+Check this before touching Superset:
 
 ```bash
 ldapsearch -x -H ldap://127.0.0.1:3890 \
   -D "uid=admin,ou=people,dc=example,dc=com" -w adminpass \
-  -b "dc=example,dc=com" "(uid=bob)" department
+  -b "dc=example,dc=com" "(uid=dave)" memberOf brcd department area type
 ```
 
 Expected:
 
 ```
-dn: uid=bob,ou=people,dc=example,dc=com
-department: HN
+dn: uid=dave,ou=people,dc=example,dc=com
+memberOf: cn=dsp_data_analyst,ou=groups,dc=example,dc=com
+brcd: 1050
+department: 41
+area: HN
+type: KHCN
 ```
 
-If this doesn't show the attribute, nothing downstream will work — go no
-further until it does. Against a real AD, run the equivalent `ldapsearch`
-(or ADUC / `Get-ADUser -Properties <attr>` in PowerShell) as the account
-Superset will bind with, since AD can restrict which attributes a given
-bind account is allowed to read.
-
-### Alternative: mapping from group membership instead
-
-If your directory genuinely does authorize via group membership, the setup
-is the same shape, just reading a different (multi-valued) attribute:
-create groups via `createGroup`, add users to them via `addUserToGroup`,
-and point Superset at `memberOf` instead of a plain attribute — covered in
-Part C. lldap computes `memberOf` on user entries automatically from group
-membership, no extra step needed; verify it the same way:
-`ldapsearch ... "(uid=bob)" memberOf`.
+Against a real AD, run the same search as the account Superset binds with:
+AD can hide attributes from a given bind account.
 
 ---
 
@@ -301,82 +281,104 @@ gets pinned as "in use" before the next GC pass.
 ## Part C — Configure Superset for LDAP auth
 
 Everything below lives in `configOverrides` in the Helm values (see
-`superset-values.yaml` in this repo for the full file) — the chart pastes
-each entry verbatim into `superset_config.py`.
+[`superset-values.yaml`](superset-values.yaml) for the full file,
+including the `DataAccessSecurityManager` class). The chart pastes each
+entry into `superset_config.py`.
 
 ```python
 from flask_appbuilder.security.manager import AUTH_LDAP
 
 AUTH_TYPE = AUTH_LDAP
 AUTH_USER_REGISTRATION = True
-AUTH_USER_REGISTRATION_ROLE = "Gamma"   # fallback role if no group mapping matches
+# Added to every user at every login. Keep it the least-privileged
+# functional role: permissions add up across roles.
+AUTH_USER_REGISTRATION_ROLE = "DSP_DATA_VIEWER"
 
 AUTH_LDAP_SERVER = "ldap://<ldap-host>:3890"
 AUTH_LDAP_SEARCH = "dc=example,dc=com"
 AUTH_LDAP_UID_FIELD = "uid"
-
 AUTH_LDAP_BIND_USER = "uid=admin,ou=people,dc=example,dc=com"
-AUTH_LDAP_BIND_PASSWORD = "adminpass"
-
+AUTH_LDAP_BIND_PASSWORD = "<bind password>"
 AUTH_LDAP_FIRSTNAME_FIELD = "givenName"
 AUTH_LDAP_LASTNAME_FIELD = "sn"
 AUTH_LDAP_EMAIL_FIELD = "mail"
 
-# The attribute read on every login and mapped to Superset roles below.
-# Despite the setting's name, this does NOT have to be a group-membership
-# field -- it can be any attribute your directory returns on the user
-# entry. Here it's "department", a plain attribute with no group object
-# behind it at all. (To authorize from real AD group membership instead,
-# set this to "memberOf" and key AUTH_ROLES_MAPPING by group DNs instead
-# of attribute values -- see the "Alternative" callout in Part A.)
-AUTH_LDAP_GROUP_FIELD = "department"
-AUTH_ROLES_SYNC_AT_LOGIN = True
+# Functional roles come from groups...
+AUTH_LDAP_GROUP_FIELD = "memberOf"
+# ...the rest from these user attributes (LDAP attribute names).
+ACCESS_ATTRIBUTES = {"brcd": "brcd", "department": "department", "area": "area", "type": "type"}
 
 AUTH_ROLES_MAPPING = {
-    # Keys here are values of the `department` attribute, not group DNs.
-    "HO": ["Admin"],
-    "HN": ["KHCN", "Region_HN"],
-    "HCM": ["KHCN", "Region_HCM"],
+    # functional roles, keyed by group DN
+    "cn=superset_admins,ou=groups,dc=example,dc=com": ["Admin"],
+    "cn=dsp_application_admin,ou=groups,dc=example,dc=com": ["DSP_APPLICATION_ADMIN"],
+    "cn=dsp_data_steward,ou=groups,dc=example,dc=com": ["DSP_DATA_STEWARD"],
+    "cn=dsp_data_analyst,ou=groups,dc=example,dc=com": ["DSP_DATA_ANALYST"],
+    "cn=dsp_data_viewer,ou=groups,dc=example,dc=com": ["DSP_DATA_VIEWER"],
+    # data roles, keyed "area:<value>" / "type:<value>"
+    "area:HN": ["AREA_HN"],
+    "area:HCM": ["AREA_HCM"],
+    "type:KHCN": ["TYPE_KHCN"],
+    "type:KHDN": ["TYPE_KHDN"],
 }
+AUTH_ROLES_SYNC_AT_LOGIN = True
+
+CUSTOM_SECURITY_MANAGER = DataAccessSecurityManager   # defined in the values file
+FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "DASHBOARD_RBAC": True}
 ```
+
+What `DataAccessSecurityManager` adds to Flask-AppBuilder's standard LDAP
+login:
+
+1. **Requests the extra attributes.** FAB's LDAP search only asks for
+   name, email and `AUTH_LDAP_GROUP_FIELD`. The class extends that
+   search's attribute list with `ACCESS_ATTRIBUTES`.
+2. **Turns them into role keys:** `dept:<brcd> - <department>`,
+   `area:<area>` and `type:<type>`. Empty attributes give no key.
+3. **Resolves the keys** in `get_roles_from_keys`:
+   - `area:*` and `type:*` go through `AUTH_ROLES_MAPPING`. An unmapped
+     value gives no role, and deny-by-default RLS then hides every row.
+   - `dept:*` picks the single role whose name starts with
+     `<brcd> - <deptcd> - `. Department role names change when a
+     department is renamed, so they can't be mapping keys. If no role
+     matches, or several do, the user gets no department role (several
+     matches are logged).
+
+`get_roles_from_keys` is also what FAB's OAuth login uses, so the OIDC
+variant (Part H) reuses steps 2 and 3 unchanged.
 
 ### Gotcha: `AUTH_ROLES_SYNC_AT_LOGIN` recalculates roles from scratch on
 ### every login — including for accounts you didn't mean to touch
 
-`AUTH_ROLES_SYNC_AT_LOGIN = True` means the user's Superset role set is
-**replaced**, not merged, on every login, with whatever
-`AUTH_ROLES_MAPPING` computes from their current attribute value (falling
-back to `AUTH_USER_REGISTRATION_ROLE` if nothing matches, or if the
-attribute is simply unset on that entry). This bit us directly: the LDAP
-bind account (`uid=admin`) had no `department` value set at first. The
-first time that account logged into Superset through LDAP (which happens
-any time you authenticate as `admin` via the LDAP provider — including just
-to test the setup), its pre-existing `Admin` role was silently stripped
-down to only the default `Gamma` fallback.
+`AUTH_ROLES_SYNC_AT_LOGIN = True` means the user's role set is
+**replaced**, not merged, at every login, with whatever the directory
+yields, plus `AUTH_USER_REGISTRATION_ROLE`. This bit us directly: the LDAP
+bind account (`uid=admin`) had no mapped value at first. The first time it
+logged into Superset through LDAP, its existing `Admin` role was silently
+replaced by the default role.
 
-**Fix**: make sure every account you care about — including
-infrastructure/bind accounts, and especially any real-AD service account
-Superset itself binds as — actually has the attribute set to a value
-`AUTH_ROLES_MAPPING` covers. (In this setup: `department: HO` on the `admin`
-entry, mapped to `Admin` above.) If you hit this after the fact, the role
-has to be restored directly:
+Consequences:
+
+- Every account that needs a non-default role, including bind and service
+  accounts such as the one `dept-role-sync` logs in as, must get it from
+  the directory. Here, `admin` is in `superset_admins`.
+- Roles assigned by hand in the Superset UI are lost at that user's next
+  login.
+
+If you hit this after the fact, restore the role directly:
 
 ```sql
 insert into ab_user_role (id, user_id, role_id)
-select coalesce(max(id),0)+1, <user_id>, <admin_role_id>
-from ab_user_role;
+values (nextval('ab_user_role_id_seq'), <user_id>, <admin_role_id>);
 ```
-
-(Watch the sequence when doing this by hand — see Troubleshooting below.)
 
 ### Also required: `python-ldap`/`trino`/`psycopg2` need libc/OS packages
 
-Already covered by the image in Part B — noted here only so the config and
-the image requirement stay linked in your head: `AUTH_TYPE = AUTH_LDAP`
-does nothing useful without `python-ldap` importable in the running
-container, and there's no in-app error that says so clearly — it surfaces
-as `ModuleNotFoundError: No module named 'ldap'` or `'psycopg2'` deep in a
-gunicorn worker traceback at startup.
+Already covered by the image in Part B. `AUTH_TYPE = AUTH_LDAP` does nothing
+useful without `python-ldap` importable in the running container, and
+there's no clear in-app error when it's missing: it surfaces as
+`ModuleNotFoundError: No module named 'ldap'` deep in a gunicorn worker
+traceback at startup.
 
 ---
 
@@ -416,189 +418,117 @@ dataset that was already there.
 
 ---
 
-## Part E — Create the roles `AUTH_ROLES_MAPPING` refers to
+## Part E — Create the roles
 
-**Flask-AppBuilder does not auto-create roles named in `AUTH_ROLES_MAPPING`.**
-If a mapped role name (`KHCN`, `Region_HN`, `Region_HCM` here) doesn't
-already exist, FAB logs a warning and silently drops it from the user's
-role set for that login:
+Flask-AppBuilder **does not create** roles named in `AUTH_ROLES_MAPPING`.
+A missing role is silently dropped from the user's roles at login:
 
 ```
-WARNING:flask_appbuilder.security.manager:Can't find role specified in AUTH_ROLES_MAPPING: KHCN
+WARNING:flask_appbuilder.security.manager:Can't find role specified in AUTH_ROLES_MAPPING: AREA_HN
 ```
 
-Create them once, as an admin, before anyone in those LDAP groups logs in
-for real (or just re-log them in afterward — `AUTH_ROLES_SYNC_AT_LOGIN`
-recalculates every time):
+So all three kinds of role must exist before users log in:
 
-```bash
-# Log in as the LDAP bind account, which now maps to Superset's Admin role
-# (see the cn=lldap_admin mapping above)
-TOKEN=$(curl -s -X POST http://localhost:8088/api/v1/security/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"adminpass","provider":"ldap","refresh":true}' \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])")
+| Roles | Created by |
+|---|---|
+| `DSP_*` functional roles | Imported once from a roles export: `superset fab import-roles --path dsp_roles.json` (run in a Superset pod; [`data-access/roles/dsp_roles.json`](data-access/roles/dsp_roles.json)) |
+| `<brcd> - <deptcd> - <deptnm>` department roles | The [`dept-role-sync`](dept-role-sync/README.md) CronJob, every 15 minutes |
+| `AREA_*`, `TYPE_*` data roles | [`data-access/setup_rls.py`](data-access/README.md), together with their RLS filters (Part F) |
 
-# Superset's API CSRF check needs a session cookie paired with the CSRF
-# token, not just the header -- use a cookie jar across both calls.
-COOKIES=cookies.txt
-CSRF=$(curl -s -c $COOKIES -b $COOKIES http://localhost:8088/api/v1/security/csrf_token/ \
-  -H "Authorization: Bearer $TOKEN" | python3 -c "import json,sys;print(json.load(sys.stdin)['result'])")
+Department and data roles carry **no permissions**. Users still get data,
+because:
 
-for role in KHCN Region_HN Region_HCM; do
-  curl -s -c $COOKIES -b $COOKIES -X POST http://localhost:8088/api/v1/security/roles/ \
-    -H "Authorization: Bearer $TOKEN" -H "X-CSRFToken: $CSRF" \
-    -H "Content-Type: application/json" -H "Referer: http://localhost:8088/" \
-    -d "{\"name\":\"$role\"}"
-done
-```
+- **dashboards** are granted to department roles (`DASHBOARD_RBAC`), and a
+  user can read the chart data of a published dashboard granted to them,
+  without dataset permissions;
+- **data roles** only exist to select RLS filters.
 
-A brand-new role starts with **zero permissions** — it can't see any
-dataset yet, RLS or not. Grant it access to the datasource(s) it needs
-(`Admin` UI: *Settings → List Roles → edit role → add
-"datasource access on [DB].[table]"* and "database access on [DB]"; or via
-SQL against `ab_permission_view` / `ab_permission_view_role` if scripting
-this, matching the pattern in Part F below). Skipping this step produces a
-clear, specific error rather than silently-wrong data —
-`DATASOURCE_SECURITY_ACCESS_ERROR`, "This endpoint requires the datasource
-..., database or `all_datasource_access` permission" — which is the signal
-to go grant it.
+`DSP_APPLICATION_ADMIN` and `Admin` have `all_datasource_access` instead.
 
 ---
 
-## Part F — Set up the actual Row Level Security
+## Part F — Set up Row Level Security
 
-RLS in Superset is a straightforward mechanism once the LDAP → role
-plumbing above is in place: a filter is a SQL clause, scoped to one or more
-datasets, that applies **only to users holding one of the roles it's
-scoped to**. Everyone else queries the dataset unfiltered (or filtered by
-whichever *other* RLS rule matches their own roles).
-
-### Demo dataset
-
-A virtual (SQL-defined) dataset over Trino's built-in `tpch` sample data —
-chosen because it's read-only, always available, and needs no data loading:
-
-```sql
-SELECT n.name AS nation, r.name AS region_name
-FROM tpch.tiny.nation n
-JOIN tpch.tiny.region r ON n.regionkey = r.regionkey
-```
-
-Create it via the API (or Superset's UI: *Data → Datasets → + Dataset →
-SQL*):
+[`data-access/setup_rls.py`](data-access/setup_rls.py) creates everything
+from [`rls_config.json`](data-access/rls_config.json) and is idempotent.
+Re-run it after adding an area or type value, or a dataset.
 
 ```bash
-curl -s -c $COOKIES -b $COOKIES -X POST http://localhost:8088/api/v1/dataset/ \
-  -H "Authorization: Bearer $TOKEN" -H "X-CSRFToken: $CSRF" \
-  -H "Content-Type: application/json" -H "Referer: http://localhost:8088/" \
-  -d '{
-    "database": 1,
-    "table_name": "rls_demo_nation_region",
-    "sql": "SELECT n.name AS nation, r.name AS region_name FROM tpch.tiny.nation n JOIN tpch.tiny.region r ON n.regionkey = r.regionkey"
-  }'
+cd data-access
+SUPERSET_URL=http://superset.default.svc.cluster.local:8088 \
+SUPERSET_USERNAME=admin SUPERSET_PASSWORD=... python3 setup_rls.py
 ```
 
-### RLS filters
+Resulting filters, attached automatically to **every dataset that has the
+filtered column**:
 
-Two filters, each scoped to one of the roles the LDAP groups map to:
+| Filter | Type | Roles | Group key | Clause |
+|---|---|---|---|---|
+| `RLS area = HN` | Regular | `AREA_HN` | `area` | `area = 'HN'` |
+| `RLS area = HCM` | Regular | `AREA_HCM` | `area` | `area = 'HCM'` |
+| `RLS area: deny by default` | **Base** | excludes `Admin`, `DSP_APPLICATION_ADMIN` | `area` | `1 = 0` |
+| `RLS type = KHCN` | Regular | `TYPE_KHCN` | `data_type` | `data_type = 'KHCN'` |
+| `RLS type = KHDN` | Regular | `TYPE_KHDN` | `data_type` | `data_type = 'KHDN'` |
+| `RLS type: deny by default` | **Base** | excludes `Admin`, `DSP_APPLICATION_ADMIN` | `data_type` | `1 = 0` |
 
-```bash
-curl -s -c $COOKIES -b $COOKIES -X POST http://localhost:8088/api/v1/rowlevelsecurity/ \
-  -H "Authorization: Bearer $TOKEN" -H "X-CSRFToken: $CSRF" \
-  -H "Content-Type: application/json" -H "Referer: http://localhost:8088/" \
-  -d '{
-    "name": "RLS - HN region only",
-    "filter_type": "Regular",
-    "tables": [1],
-    "roles": [<Region_HN role id>],
-    "group_key": "region",
-    "clause": "region_name = '\''ASIA'\''"
-  }'
+How Superset combines them:
 
-curl -s -c $COOKIES -b $COOKIES -X POST http://localhost:8088/api/v1/rowlevelsecurity/ \
-  -H "Authorization: Bearer $TOKEN" -H "X-CSRFToken: $CSRF" \
-  -H "Content-Type: application/json" -H "Referer: http://localhost:8088/" \
-  -d '{
-    "name": "RLS - HCM region only",
-    "filter_type": "Regular",
-    "tables": [1],
-    "roles": [<Region_HCM role id>],
-    "group_key": "region",
-    "clause": "region_name = '\''EUROPE'\''"
-  }'
-```
+- A **Regular** filter applies to users who **have** one of its roles. A
+  **Base** filter applies to everyone **except** its roles.
+- Filters with the **same group key are ORed**; different group keys are
+  ANDed.
 
-`filter_type: "Regular"` ANDs the clause onto every query against the
-dataset for a matching user. (`"Base"` behaves similarly but with
-different combination semantics when multiple filters apply to the same
-user — see Superset's own RLS docs if you need to stack rules.) The
-`clause` field is a raw SQL boolean expression injected into the `WHERE` —
-it can reference `current_username()`, `current_user_id()`, and other Jinja
-helpers Superset exposes if you want the filter itself to vary per-user
-rather than per-role (not needed here, since the role already encodes
-which region a user belongs to).
+So for dave (`AREA_HN`, `TYPE_KHCN`) the query gets
+`(1 = 0 OR area = 'HN') AND (1 = 0 OR data_type = 'KHCN')`. A user missing
+either attribute gets `1 = 0` for that group, which means no rows. Admins
+skip the Base filters and have no Regular ones, so they see everything.
 
-That's the whole RLS setup. The LDAP group is doing all the interesting
-work upstream of this — by the time a request reaches the RLS layer, it's
-indistinguishable from RLS configured against a DB-auth or OAuth user with
-the same role.
+Why deny by default: Regular filters only restrict users who hold their
+roles, so without the Base filters a user with no `area` attribute would
+see **every** row.
+
+RLS does **not** apply to SQL Lab unless `RLS_IN_SQLLAB` is enabled (off by
+default). In this setup only `Admin` and `DSP_APPLICATION_ADMIN` have SQL
+Lab, and both are unrestricted anyway.
 
 ---
 
 ## Part G — Test it end-to-end
 
-Log each user in through LDAP and query the dataset via the Chart Data API
-(this exercises the same code path a real chart/dashboard would):
-
 ```bash
-login() {
-  curl -s -X POST http://localhost:8088/api/v1/security/login \
-    -H "Content-Type: application/json" \
-    -d "{\"username\":\"$1\",\"password\":\"$2\",\"provider\":\"ldap\",\"refresh\":true}" \
-    | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])"
-}
-
-query_as() {
-  local user=$1 pass=$2 cookies=cookies_$1.txt tok csrf
-  tok=$(login "$user" "$pass")
-  csrf=$(curl -s -c "$cookies" -b "$cookies" http://localhost:8088/api/v1/security/csrf_token/ \
-    -H "Authorization: Bearer $tok" | python3 -c "import json,sys;print(json.load(sys.stdin)['result'])")
-  curl -s -c "$cookies" -b "$cookies" -X POST http://localhost:8088/api/v1/chart/data \
-    -H "Authorization: Bearer $tok" -H "X-CSRFToken: $csrf" \
-    -H "Content-Type: application/json" -H "Referer: http://localhost:8088/" \
-    -d '{"datasource":{"id":1,"type":"table"},"queries":[{"columns":["region_name"],"row_limit":1000,"metrics":[],"orderby":[]}],"result_format":"json","result_type":"full"}'
-}
-
-query_as alice "Passw0rd!"   # -> ASIA, AMERICA, AFRICA, EUROPE, MIDDLE EAST (Admin: unrestricted)
-query_as bob   "Passw0rd!"   # -> ASIA only
-query_as carol "Passw0rd!"   # -> EUROPE only
+cd data-access
+export SUPERSET_URL=http://<superset> SUPERSET_USERNAME=admin SUPERSET_PASSWORD=...
+python3 demo/setup_demo.py    # dataset demo_branch_data, 2 charts, 2 dashboards
+python3 setup_rls.py
+python3 demo/test_access.py   # logs in as each test user via LDAP
 ```
 
-Also worth confirming directly against the metadata DB, since it shows the
-LDAP → role sync independent of RLS:
+`setup_demo.py` builds a virtual dataset over Trino (`VALUES`, no table to
+load) and two published dashboards:
 
-```sql
-select u.username, r.name
-from ab_user u
-join ab_user_role ur on u.id = ur.user_id
-join ab_role r on r.id = ur.role_id
-order by u.username, r.name;
+- `Demo - 1050 - 41`, granted to role `1050 - 41 - …`
+- `Demo - 1060 - 41`, granted to role `1060 - 41 - …`
+
+`test_access.py` checks, for every user in the "Result" table above:
+
+- their roles after login;
+- which demo dashboards they can list;
+- the rows returned through each dashboard, through a dashboard they
+  weren't granted (must be denied), and with no dashboard context (must be
+  denied except for admins);
+- whether they can create content;
+- whether they can use SQL Lab.
+
 ```
-
-Expected after all three have logged in once:
-
-```
- admin | Admin
- admin | Gamma
- alice | Admin
- alice | Gamma
- bob   | Gamma
- bob   | KHCN
- bob   | Region_HN
- carol | Gamma
- carol | KHCN
- carol | Region_HCM
+PASS  dave   roles
+PASS  dave   dashboards visible ['Demo - 1050 - 41']
+PASS  dave   data via 'Demo - 1050 - 41': 2 rows
+PASS  dave   data via 'Demo - 1060 - 41': denied
+PASS  dave   data without dashboard: denied
+PASS  dave   create content: True
+PASS  dave   SQL Lab: False
+...
+41/41 checks passed
 ```
 
 ---
@@ -675,14 +605,19 @@ from superset.security import SupersetSecurityManager
 
 AUTH_TYPE = AUTH_OAUTH
 AUTH_USER_REGISTRATION = True
-AUTH_USER_REGISTRATION_ROLE = "Gamma"
+AUTH_USER_REGISTRATION_ROLE = "DSP_DATA_VIEWER"
 AUTH_ROLES_SYNC_AT_LOGIN = True
 
-# Identical to the LDAP-variant mapping in Part C.
+# Same mapping as Part C, except functional roles are keyed by whatever
+# the IdP puts in its "groups" claim (names here, not LDAP DNs).
 AUTH_ROLES_MAPPING = {
-    "HO": ["Admin"],
-    "HN": ["KHCN", "Region_HN"],
-    "HCM": ["KHCN", "Region_HCM"],
+    "superset_admins": ["Admin"],
+    "dsp_application_admin": ["DSP_APPLICATION_ADMIN"],
+    "dsp_data_steward": ["DSP_DATA_STEWARD"],
+    "dsp_data_analyst": ["DSP_DATA_ANALYST"],
+    "dsp_data_viewer": ["DSP_DATA_VIEWER"],
+    "area:HN": ["AREA_HN"], "area:HCM": ["AREA_HCM"],
+    "type:KHCN": ["TYPE_KHCN"], "type:KHDN": ["TYPE_KHDN"],
 }
 
 OAUTH_PROVIDERS = [
@@ -700,27 +635,29 @@ OAUTH_PROVIDERS = [
     }
 ]
 
-class CustomSsoSecurityManager(SupersetSecurityManager):
-    # The whole mechanism, in one method: pull whatever custom claim your
-    # IdP actually sends -- "department" here, exactly as arbitrary as the
-    # LDAP attribute case -- and hand it back as "role_keys".
+# Subclass the LDAP setup's manager: its get_roles_from_keys (static
+# mapping + "<brcd> - <deptcd> - " prefix lookup) and access_role_keys are
+# reused as-is. Only where the values come from changes: claims instead of
+# LDAP attributes.
+class OidcDataAccessSecurityManager(DataAccessSecurityManager):
     def get_oauth_user_info(self, provider, resp):
-        if provider == "oidc":
-            me = self.appbuilder.sm.oauth_remotes[provider].get("userinfo")
-            me.raise_for_status()
-            data = me.json()
-            department = data.get("department")
-            name = data.get("name") or ""
-            return {
-                "username": data.get("sub"),
-                "email": data.get("email"),
-                "first_name": name.split(" ")[0] if name else "",
-                "last_name": " ".join(name.split(" ")[1:]) if name else "",
-                "role_keys": [department] if department else [],
-            }
-        return {}
+        if provider != "oidc":
+            return {}
+        me = self.appbuilder.sm.oauth_remotes[provider].get("userinfo")
+        me.raise_for_status()
+        data = me.json()
+        name = data.get("name") or ""
+        return {
+            "username": data.get("sub"),
+            "email": data.get("email"),
+            "first_name": name.split(" ")[0] if name else "",
+            "last_name": " ".join(name.split(" ")[1:]) if name else "",
+            "role_keys": list(data.get("groups") or []) + self.access_role_keys(
+                data.get("brcd"), data.get("department"), data.get("area"), data.get("type")
+            ),
+        }
 
-CUSTOM_SECURITY_MANAGER = CustomSsoSecurityManager
+CUSTOM_SECURITY_MANAGER = OidcDataAccessSecurityManager
 ```
 
 `api_base_url` is what `.get("userinfo")` resolves against — it must match
@@ -763,6 +700,13 @@ curl -s -c $COOKIES -b $COOKIES "$CALLBACK" -o /dev/null -D -   # -> 302 to "/" 
 curl -s -c $COOKIES -b $COOKIES http://localhost:8088/api/v1/me/
 ```
 
+> **Test status:** the OIDC flow below was verified with the earlier,
+> single-claim mapping (`department: HN` → `KHCN`, `Region_HN`). The
+> multi-claim config above reuses the LDAP-tested `get_roles_from_keys`
+> unchanged, but hasn't been re-run against an IdP. To test it, send
+> `brcd`/`department`/`area`/`type`/`groups` in the step-2 `claims` and
+> run `data-access/demo/test_access.py`-style checks.
+
 Verified end to end exactly this way: step 4's `/api/v1/me/` confirms
 Superset logged in `bob` (`sub: bob` from the claims in step 2, matched to
 username), and the metadata DB shows the same role sync as the LDAP path:
@@ -782,7 +726,13 @@ downstream of "which roles does this user have" needed to change at all.
 
 ## Part I — Department roles synced from an API
 
-When roles must come from an external department API (`deptcd`/`deptnm`) and be used to grant dashboards, see [`dept-role-sync/`](dept-role-sync/README.md): a Helm-deployed CronJob (own image, TLS and Vault options) that creates/renames `"<deptcd> - <deptnm>"` roles in place, plus a security-manager override that maps a user's `department` attribute to the matching role by its code prefix.
+Department roles come from an external department API and are used to
+grant dashboards. See [`dept-role-sync/`](dept-role-sync/README.md): a
+Helm-deployed CronJob (own image, TLS and Vault options) that creates
+`"<brcd> - <deptcd> - <deptnm>"` roles and renames them in place when
+`deptnm` changes. At login, `DataAccessSecurityManager` (Part C) gives the
+user the role matching their `brcd` + `department` attributes by that
+prefix.
 
 ---
 
@@ -820,6 +770,18 @@ because the attribute was simply blank/unset on that particular entry. Set
 the attribute (or group membership) on every real account that needs a
 non-default role, not just the "interesting" ones — see the gotcha in
 Part C.
+
+**A user sees a granted dashboard, but every chart is empty** — RLS
+deny by default (Part F): the user is missing the `area` or `type`
+attribute, or has a value with no `AREA_*`/`TYPE_*` mapping. Check their
+roles in *Settings → List Users*. The fix belongs in the directory, not in
+Superset (roles are rebuilt at every login).
+
+**A dashboard granted to a department role doesn't appear for its users**
+— with `DASHBOARD_RBAC`, a role-granted dashboard must be **published**. A
+draft is visible only to Admins and its owners. Also check that the user
+has that exact `<brcd> - <deptcd> - ` role: both attributes must match the
+API's codes exactly, leading zeros included.
 
 **`DATASOURCE_SECURITY_ACCESS_ERROR` when a user with the "right" RLS role
 still can't query the dataset** — RLS restricts *rows*, it doesn't grant
