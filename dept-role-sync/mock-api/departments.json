@@ -1,0 +1,517 @@
+{
+  "success": true,
+  "message": "Thành công",
+  "data": {
+    "brcd": 1050,
+    "engbrnm": "VP Tru so chinh",
+    "engbrshrtnm": "VP Tru so chinh",
+    "lclbrnm": "VP Tru so chinh",
+    "lclbrshrtnm": "VP Tru so chinh",
+    "departments": [
+      {
+        "id": 25645,
+        "deptnm": "Ban QLDA ĐTXDKV - P Kế toán TH",
+        "deptcd": "94",
+        "brcd": 1050
+      },
+      {
+        "id": 25647,
+        "deptnm": "TT Quản lý nợ có vấn đề - Ban Giám đốc",
+        "deptcd": "06",
+        "brcd": 1050
+      },
+      {
+        "id": 25648,
+        "deptnm": "TT QLRR phi tín dụng - Ban GĐ",
+        "deptcd": "07",
+        "brcd": 1050
+      },
+      {
+        "id": 25649,
+        "deptnm": "TT QLRR phi tín dụng - Phòng QLRR Thị trường",
+        "deptcd": "08",
+        "brcd": 1050
+      },
+      {
+        "id": 25650,
+        "deptnm": "Ban Quản lý tài sản Nợ - Tài sản có",
+        "deptcd": "10",
+        "brcd": 1050
+      },
+      {
+        "id": 25651,
+        "deptnm": "TTQLRR Phi tín dụng - Phòng QLRR Hoạt động",
+        "deptcd": "12",
+        "brcd": 1050
+      },
+      {
+        "id": 25652,
+        "deptnm": "Trung tâm tài trợ thương mại",
+        "deptcd": "14",
+        "brcd": 1050
+      },
+      {
+        "id": 25653,
+        "deptnm": "TT Quản lý nợ có vấn đề - P.QL Nợ có VĐ nội bảng",
+        "deptcd": "15",
+        "brcd": 1050
+      },
+      {
+        "id": 25654,
+        "deptnm": "Ban Tài chính kế toán - P QLy cân đối TSC",
+        "deptcd": "27",
+        "brcd": 1050
+      },
+      {
+        "id": 25655,
+        "deptnm": "Văn Phòng Đảng ủy",
+        "deptcd": "28",
+        "brcd": 1050
+      },
+      {
+        "id": 25656,
+        "deptnm": "Cơ quan ủy ban Kiểm tra Đảng ủy",
+        "deptcd": "30",
+        "brcd": 1050
+      },
+      {
+        "id": 25657,
+        "deptnm": "Ban Quản lý dự án ĐTXD TSC",
+        "deptcd": "31",
+        "brcd": 1050
+      },
+      {
+        "id": 25661,
+        "deptnm": "Ban Tổ chức Đảng ủy",
+        "deptcd": "40",
+        "brcd": 1050
+      },
+      {
+        "id": 25662,
+        "deptnm": "Ban Công nghệ",
+        "deptcd": "42",
+        "brcd": 1050
+      },
+      {
+        "id": 25664,
+        "deptnm": "TT Chăm sóc khách hàng- P. Chăm sóc KH",
+        "deptcd": "44",
+        "brcd": 1050
+      },
+      {
+        "id": 25665,
+        "deptnm": "Ban Tài chính kế toán - P Chế độ",
+        "deptcd": "46",
+        "brcd": 1050
+      },
+      {
+        "id": 25666,
+        "deptnm": "Ban Tuyên giáo Đảng ủy",
+        "deptcd": "47",
+        "brcd": 1050
+      },
+      {
+        "id": 25667,
+        "deptnm": "TT Quản lý nợ có vấn đề - P QLNVCĐ KV HCM",
+        "deptcd": "50",
+        "brcd": 1050
+      },
+      {
+        "id": 25668,
+        "deptnm": "Ban Kiểm tra, giám sát nội bộ - P KTGSNB KV Hà Nội",
+        "deptcd": "51",
+        "brcd": 1050
+      },
+      {
+        "id": 25669,
+        "deptnm": "Ban Ngân hàng số",
+        "deptcd": "53",
+        "brcd": 1050
+      },
+      {
+        "id": 25670,
+        "deptnm": "Ban Tài chính kế toán - P QL tài chính",
+        "deptcd": "77",
+        "brcd": 1050
+      },
+      {
+        "id": 25671,
+        "deptnm": "Văn phòng TSC (P. Lưu trữ)",
+        "deptcd": "82",
+        "brcd": 1050
+      },
+      {
+        "id": 25672,
+        "deptnm": "Văn phòng TSC (P. Lễ tân, khánh tiết)",
+        "deptcd": "85",
+        "brcd": 1050
+      },
+      {
+        "id": 25673,
+        "deptnm": "Ban QLDA ĐTXDKV - P QLý Đấu thầu",
+        "deptcd": "88",
+        "brcd": 1050
+      },
+      {
+        "id": 25674,
+        "deptnm": "Văn phòng TSC (P. Kế toán, tài chính)",
+        "deptcd": "89",
+        "brcd": 1050
+      },
+      {
+        "id": 25675,
+        "deptnm": "Văn phòng TSC (P. Hành chính)",
+        "deptcd": "90",
+        "brcd": 1050
+      },
+      {
+        "id": 25677,
+        "deptnm": "ủy ban Nhân sự",
+        "deptcd": "55",
+        "brcd": 1050
+      },
+      {
+        "id": 25678,
+        "deptnm": "TTDV TT&KH-Ban giám đốc",
+        "deptcd": "56",
+        "brcd": 1050
+      },
+      {
+        "id": 25681,
+        "deptnm": "TT Kinh doanh Vốn & Tiền tệ - Ban Giám đốc",
+        "deptcd": "64",
+        "brcd": 1050
+      },
+      {
+        "id": 25600,
+        "deptnm": "Ban Thư ký tổng hợp",
+        "deptcd": "62",
+        "brcd": 1050
+      },
+      {
+        "id": 25601,
+        "deptnm": "Ban Tài chính kế toán - P TTKQ",
+        "deptcd": "65",
+        "brcd": 1050
+      },
+      {
+        "id": 25602,
+        "deptnm": "TT Kinh doanh Vốn & Tiền tệ - Phòng KD ngoại tệ&PS",
+        "deptcd": "69",
+        "brcd": 1050
+      },
+      {
+        "id": 25603,
+        "deptnm": "Ban Thẩm định và phê duyệt tín dụng",
+        "deptcd": "73",
+        "brcd": 1050
+      },
+      {
+        "id": 25604,
+        "deptnm": "Ban QLDA ĐTXDKV - BGĐ",
+        "deptcd": "86",
+        "brcd": 1050
+      },
+      {
+        "id": 25605,
+        "deptnm": "TTQLRR tín dụng - P. QLRR Tín dụng",
+        "deptcd": "67",
+        "brcd": 1050
+      },
+      {
+        "id": 25606,
+        "deptnm": "Uỷ ban chính sách",
+        "deptcd": "60",
+        "brcd": 1050
+      },
+      {
+        "id": 25607,
+        "deptnm": "Ban Chính sách Tín dụng",
+        "deptcd": "74",
+        "brcd": 1050
+      },
+      {
+        "id": 25608,
+        "deptnm": "Ban Khách hàng doanh nghiệp",
+        "deptcd": "99",
+        "brcd": 1050
+      },
+      {
+        "id": 25609,
+        "deptnm": "TTTToán- Phòng tổng hợp",
+        "deptcd": "24",
+        "brcd": 1050
+      },
+      {
+        "id": 25610,
+        "deptnm": "Cơ quan Công đoàn",
+        "deptcd": "29",
+        "brcd": 1050
+      },
+      {
+        "id": 25611,
+        "deptnm": "Văn phòng Đoàn Thanh niên",
+        "deptcd": "41",
+        "brcd": 1050
+      },
+      {
+        "id": 25612,
+        "deptnm": "Ban Tổ chức nhân sự",
+        "deptcd": "48",
+        "brcd": 1050
+      },
+      {
+        "id": 25614,
+        "deptnm": "Ban Tài chính kế toán - Ban lãnh đạo",
+        "deptcd": "66",
+        "brcd": 1050
+      },
+      {
+        "id": 25615,
+        "deptnm": "TTTToán - P. Quản lý tài khoản Nostro, Vostro",
+        "deptcd": "98",
+        "brcd": 1050
+      },
+      {
+        "id": 25616,
+        "deptnm": "Ban Quản lý đầu tư nội ngành",
+        "deptcd": "61",
+        "brcd": 1050
+      },
+      {
+        "id": 25617,
+        "deptnm": "TTDV TT&KH-Quản lý SPDVTT",
+        "deptcd": "76",
+        "brcd": 1050
+      },
+      {
+        "id": 25618,
+        "deptnm": "TT Kinh doanh Vốn & Tiền tệ - Phòng Kế toán",
+        "deptcd": "71",
+        "brcd": 1050
+      },
+      {
+        "id": 25619,
+        "deptnm": "TTTToán- Phòng Swift",
+        "deptcd": "72",
+        "brcd": 1050
+      },
+      {
+        "id": 25620,
+        "deptnm": "TT Quản lý nợ có vấn đề - P.QL Nợ sau XL",
+        "deptcd": "75",
+        "brcd": 1050
+      },
+      {
+        "id": 25621,
+        "deptnm": "Ban Tổng giám đốc",
+        "deptcd": "02",
+        "brcd": 1050
+      },
+      {
+        "id": 25622,
+        "deptnm": "Uỷ ban quản lý rủi ro Agribank",
+        "deptcd": "38",
+        "brcd": 1050
+      },
+      {
+        "id": 25623,
+        "deptnm": "Ban Thư ký Hội đồng thành viên",
+        "deptcd": "39",
+        "brcd": 1050
+      },
+      {
+        "id": 25624,
+        "deptnm": "TTTToán- Phòng thanh toán",
+        "deptcd": "23",
+        "brcd": 1050
+      },
+      {
+        "id": 25625,
+        "deptnm": "TT Quản lý nợ có vấn đề - P.Tổng hợp &XLRR",
+        "deptcd": "36",
+        "brcd": 1050
+      },
+      {
+        "id": 25626,
+        "deptnm": "TT Chăm sóc khách hàng- P. Hỗ trợ KH",
+        "deptcd": "79",
+        "brcd": 1050
+      },
+      {
+        "id": 25627,
+        "deptnm": "TT Chăm sóc khách hàng- P Q Lý chất lượng",
+        "deptcd": "80",
+        "brcd": 1050
+      },
+      {
+        "id": 25628,
+        "deptnm": "Ban Pháp chế",
+        "deptcd": "04",
+        "brcd": 1050
+      },
+      {
+        "id": 25629,
+        "deptnm": "Văn phòng TSC (Ban lãnh đạo)",
+        "deptcd": "05",
+        "brcd": 1050
+      },
+      {
+        "id": 25630,
+        "deptnm": "Ban Kế hoạch Chiến lược",
+        "deptcd": "13",
+        "brcd": 1050
+      },
+      {
+        "id": 25632,
+        "deptnm": "Ban Kiểm soát Agribank",
+        "deptcd": "17",
+        "brcd": 1050
+      },
+      {
+        "id": 25633,
+        "deptnm": "Ban Đầu tư và Cổ phần hóa",
+        "deptcd": "19",
+        "brcd": 1050
+      },
+      {
+        "id": 25634,
+        "deptnm": "TT Chăm sóc khách hàng - Ban Lãnh đạo",
+        "deptcd": "78",
+        "brcd": 1050
+      },
+      {
+        "id": 25635,
+        "deptnm": "TTTToán- P.KSNB&hỗ trợ vận hành",
+        "deptcd": "22",
+        "brcd": 1050
+      },
+      {
+        "id": 25636,
+        "deptnm": "Ban Định chế tài chính",
+        "deptcd": "52",
+        "brcd": 1050
+      },
+      {
+        "id": 25637,
+        "deptnm": "TTQLRR tín dụng - P. Quản lý Thông tin TD",
+        "deptcd": "54",
+        "brcd": 1050
+      },
+      {
+        "id": 25638,
+        "deptnm": "TTTToán- P. Kế toán",
+        "deptcd": "96",
+        "brcd": 1050
+      },
+      {
+        "id": 25639,
+        "deptnm": "Ban QLDA ĐTXDKV - P QLý Kỹ thuật",
+        "deptcd": "92",
+        "brcd": 1050
+      },
+      {
+        "id": 25640,
+        "deptnm": "TTDV TT&KH-SP&PTThịTrường",
+        "deptcd": "57",
+        "brcd": 1050
+      },
+      {
+        "id": 25641,
+        "deptnm": "TTDV TT&KH-Hỗ Trợ NV&QTHệ Thống",
+        "deptcd": "58",
+        "brcd": 1050
+      },
+      {
+        "id": 25642,
+        "deptnm": "Ban QLDA ĐTXDKV - P QLý Thi Công",
+        "deptcd": "93",
+        "brcd": 1050
+      },
+      {
+        "id": 25644,
+        "deptnm": "ủy ban Đầu tư",
+        "deptcd": "84",
+        "brcd": 1050
+      },
+      {
+        "id": 25682,
+        "deptnm": "Ban Kiểm tra, giám sát nội bộ",
+        "deptcd": "09",
+        "brcd": 1050
+      },
+      {
+        "id": 25683,
+        "deptnm": "Trung tâm Phòng, chống rửa tiền Agribank",
+        "deptcd": "21",
+        "brcd": 1050
+      },
+      {
+        "id": 25684,
+        "deptnm": "TT Chăm sóc khách hàng- P Tổng Hợp",
+        "deptcd": "81",
+        "brcd": 1050
+      },
+      {
+        "id": 25685,
+        "deptnm": "Ban Khách hàng cá nhân",
+        "deptcd": "11",
+        "brcd": 1050
+      },
+      {
+        "id": 25686,
+        "deptnm": "TT Kinh doanh Vốn & Tiền tệ - Phòng Tổng hợp&KSTT",
+        "deptcd": "70",
+        "brcd": 1050
+      },
+      {
+        "id": 25687,
+        "deptnm": "Cơ quan Đoàn Thanh niên",
+        "deptcd": "18",
+        "brcd": 1050
+      },
+      {
+        "id": 25689,
+        "deptnm": "TTQLRR tín dụng - Ban Giám đốc",
+        "deptcd": "34",
+        "brcd": 1050
+      },
+      {
+        "id": 25690,
+        "deptnm": "TTTToán- Ban giám đốc",
+        "deptcd": "26",
+        "brcd": 1050
+      },
+      {
+        "id": 25691,
+        "deptnm": "Văn phòng TSC (P. Quản trị, HCQT Mỹ Đình)",
+        "deptcd": "87",
+        "brcd": 1050
+      },
+      {
+        "id": 25692,
+        "deptnm": "Ban Tài chính kế toán - P TH& GS cân đối",
+        "deptcd": "25",
+        "brcd": 1050
+      },
+      {
+        "id": 25694,
+        "deptnm": "TTQLRR tín dụng - P.Xếp hạng & Đo lường RR TD",
+        "deptcd": "35",
+        "brcd": 1050
+      },
+      {
+        "id": 25695,
+        "deptnm": "TT Kinh doanh Vốn & Tiền tệ - Phòng KD Vốn",
+        "deptcd": "68",
+        "brcd": 1050
+      },
+      {
+        "id": 25696,
+        "deptnm": "Ban Truyền thông",
+        "deptcd": "20",
+        "brcd": 1050
+      }
+    ]
+  }
+}

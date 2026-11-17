@@ -70,6 +70,40 @@ configOverrides:
 
     AUTH_ROLES_SYNC_AT_LOGIN = True
 
+    # Department roles ("<deptcd> - <deptnm>") are created/renamed by the
+    # dept-role-sync CronJob (see dept-role-sync/), so their full names
+    # aren't stable and can't be keys in the static AUTH_ROLES_MAPPING
+    # above. Match them by the deptcd prefix instead: a user whose
+    # department attribute is "41" gets whichever role currently starts
+    # with "41 - ". Static mapping still applies on top. get_roles_from_keys
+    # is shared by FAB's LDAP and OAuth login paths, so this works for OIDC
+    # claims too.
+    import logging as _logging
+    from superset.security import SupersetSecurityManager
+
+    class DeptRoleSecurityManager(SupersetSecurityManager):
+        def get_roles_from_keys(self, role_keys):
+            roles = super().get_roles_from_keys(role_keys)
+            for key in role_keys:
+                matches = (
+                    self.session.query(self.role_model)
+                    .filter(self.role_model.name.startswith(f"{key} - ", autoescape=True))
+                    .all()
+                )
+                if len(matches) == 1:
+                    roles.add(matches[0])
+                elif matches:
+                    _logging.getLogger(__name__).warning(
+                        "dept code %s matches several roles %s, assigning none",
+                        key, [r.name for r in matches],
+                    )
+            return roles
+
+    CUSTOM_SECURITY_MANAGER = DeptRoleSecurityManager
+
+    # Lets admins grant a dashboard to roles (dashboard Properties -> Roles).
+    FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "DASHBOARD_RBAC": True}
+
     RECAPTCHA_PUBLIC_KEY = None
     import logging
 
