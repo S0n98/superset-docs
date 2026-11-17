@@ -1,0 +1,11 @@
+# This test cluster: mock API over plain HTTP, Superset via its in-cluster
+# Service, credentials in a chart-created Secret. Pass the password with
+#   --set credentials.supersetPassword=...
+deptApi:
+  url: http://192.168.2.100:8091/api/departments
+superset:
+  url: http://superset.default.svc.cluster.local:8088
+  authProvider: ldap
+credentials:
+  deptApiToken: dept-api-test-token
+  supersetUsername: admin

@@ -15,7 +15,9 @@ import json
 import logging
 import os
 import re
+import ssl
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -27,15 +29,66 @@ log = logging.getLogger("dept-role-sync")
 
 def env(name, default=None):
     value = os.environ.get(name, default)
-    if value is None:
+    if value is None or value == "":
         sys.exit(f"missing required env var {name}")
     return value
 
 
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def load_secrets_files():
+    """Load credentials from JSON files (e.g. rendered by Vault Agent).
+
+    SECRETS_FILES is a comma-separated list of paths, each holding a flat JSON
+    object like {"SUPERSET_PASSWORD": "..."}. Keys become env vars and
+    override values already in the environment.
+    """
+    for path in filter(None, (p.strip() for p in os.environ.get("SECRETS_FILES", "").split(","))):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            sys.exit(f"cannot read secrets file {path}: {e}")
+        if not isinstance(data, dict):
+            sys.exit(f"secrets file {path} must hold a JSON object")
+        for key, value in data.items():
+            os.environ[key] = str(value)
+        log.info("loaded %d keys from %s", len(data), path)
+
+
+def ssl_context(prefix):
+    """TLS settings for one endpoint: <prefix>_INSECURE_SKIP_VERIFY, <prefix>_CA_BUNDLE."""
+    if env_bool(f"{prefix}_INSECURE_SKIP_VERIFY"):
+        log.warning("%s: TLS certificate verification is DISABLED", prefix)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    ca = os.environ.get(f"{prefix}_CA_BUNDLE")
+    return ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+
+
+def http_timeout():
+    return float(os.environ.get("HTTP_TIMEOUT", "30"))
+
+
 def fetch_departments(url, token):
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.load(resp)
+    headers = {"Accept": "application/json"}
+    if token:
+        header = os.environ.get("DEPT_API_AUTH_HEADER", "Authorization")
+        scheme = os.environ.get("DEPT_API_AUTH_SCHEME", "Bearer")
+        headers[header] = f"{scheme} {token}" if scheme else token
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=http_timeout(), context=ssl_context("DEPT_API")) as resp:
+            body = json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"GET {url} -> {e.code}: {e.read().decode(errors='replace')[:500]}") from None
     if not body.get("success"):
         raise RuntimeError(f"department API returned success=false: {body.get('message')}")
     return body["data"]["departments"]
@@ -53,7 +106,8 @@ class Superset:
     def __init__(self, base_url, username, password, provider):
         self.base = base_url.rstrip("/")
         self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+            urllib.request.HTTPSHandler(context=ssl_context("SUPERSET")),
         )
         token = self._call("POST", "/api/v1/security/login", {
             "username": username, "password": password, "provider": provider, "refresh": False,
@@ -70,7 +124,7 @@ class Superset:
         data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
         req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            with self.opener.open(req, timeout=30) as resp:
+            with self.opener.open(req, timeout=http_timeout()) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"{method} {path} -> {e.code}: {e.read().decode(errors='replace')}") from None
@@ -136,13 +190,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="report changes without making them")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+                        format="%(asctime)s %(levelname)s %(message)s")
+    load_secrets_files()
+    dry_run = args.dry_run or env_bool("DRY_RUN")
 
     departments = fetch_departments(env("DEPT_API_URL"), os.environ.get("DEPT_API_TOKEN", ""))
     log.info("fetched %d departments", len(departments))
     ss = Superset(env("SUPERSET_URL"), env("SUPERSET_USERNAME"), env("SUPERSET_PASSWORD"),
                   os.environ.get("SUPERSET_AUTH_PROVIDER", "ldap"))
-    sync(departments, ss, args.dry_run)
+    sync(departments, ss, dry_run)
 
 
 if __name__ == "__main__":

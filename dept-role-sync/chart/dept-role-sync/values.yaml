@@ -1,0 +1,118 @@
+image:
+  repository: dept-role-sync
+  tag: ""                    # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- CronJob ---------------------------------------------------------------
+schedule: "*/15 * * * *"
+timeZone: ""                 # e.g. "Asia/Ho_Chi_Minh" (k8s >= 1.27)
+suspend: false
+concurrencyPolicy: Forbid
+startingDeadlineSeconds: 300
+successfulJobsHistoryLimit: 3
+failedJobsHistoryLimit: 3
+backoffLimit: 2
+activeDeadlineSeconds: 600
+ttlSecondsAfterFinished: null
+
+# --- Department API ----------------------------------------------------------
+deptApi:
+  url: ""                    # required, e.g. https://hr.example.com/api/departments
+  # Token is sent as "<authHeader>: <authScheme> <token>". Set authScheme to
+  # "" to send the raw token (e.g. authHeader: X-API-Key).
+  authHeader: Authorization
+  authScheme: Bearer
+  tls:
+    insecureSkipVerify: false
+    # CA bundle (PEM) to trust, from a ConfigMap or Secret already in the
+    # namespace. Ignored when insecureSkipVerify is true.
+    caBundle:
+      configMap: ""
+      secret: ""
+      key: ca.crt
+
+# --- Superset ------------------------------------------------------------------
+superset:
+  url: ""                    # required, e.g. http://superset.default.svc.cluster.local:8088
+  authProvider: ldap         # "db" or "ldap" -- what /api/v1/security/login accepts
+  tls:
+    insecureSkipVerify: false
+    caBundle:
+      configMap: ""
+      secret: ""
+      key: ca.crt
+
+# --- Credentials ----------------------------------------------------------------
+# Keys the job needs: DEPT_API_TOKEN (optional), SUPERSET_USERNAME,
+# SUPERSET_PASSWORD. Pick ONE source:
+#   1. existingSecret       -- a Secret you manage, holding those keys
+#   2. credentials.*        -- chart creates the Secret (fine for testing)
+#   3. vault.enabled: true  -- Vault Agent Injector renders them at pod start
+existingSecret: ""
+credentials:
+  deptApiToken: ""
+  supersetUsername: ""
+  supersetPassword: ""
+
+vault:
+  enabled: false
+  # Vault Kubernetes-auth role bound to this chart's service account.
+  role: dept-role-sync
+  # Secret holding the keys above, e.g. KV v2 "secret/data/dept-role-sync"
+  # (note the /data/ for KV v2) or KV v1 "kv/dept-role-sync".
+  secretPath: secret/data/dept-role-sync
+  kvVersion: 2
+  authPath: ""               # default auth/kubernetes
+  namespace: ""              # Vault Enterprise namespace
+  address: ""                # override injector's default Vault address
+  tlsSkipVerify: false       # agent -> Vault TLS
+  caCertSecret: ""           # k8s Secret with the Vault CA (mounted by the injector)
+  caCertPath: ""             # path of the CA inside that mount, e.g. /vault/tls/ca.crt
+  # Extra vault.hashicorp.com/* annotations, merged last.
+  annotations: {}
+
+# --- Job behaviour ----------------------------------------------------------------
+dryRun: false
+logLevel: INFO
+httpTimeout: 30
+
+# --- Pod ----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+extraEnv: []                 # e.g. HTTPS_PROXY / NO_PROXY
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+hostAliases: []
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

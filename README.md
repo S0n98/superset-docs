@@ -782,7 +782,7 @@ downstream of "which roles does this user have" needed to change at all.
 
 ## Part I — Department roles synced from an API
 
-When roles must come from an external department API (`deptcd`/`deptnm`) and be used to grant dashboards, see [`dept-role-sync/`](dept-role-sync/README.md): a CronJob that creates/renames `"<deptcd> - <deptnm>"` roles in place, plus a security-manager override that maps a user's `department` attribute to the matching role by its code prefix.
+When roles must come from an external department API (`deptcd`/`deptnm`) and be used to grant dashboards, see [`dept-role-sync/`](dept-role-sync/README.md): a Helm-deployed CronJob (own image, TLS and Vault options) that creates/renames `"<deptcd> - <deptnm>"` roles in place, plus a security-manager override that maps a user's `department` attribute to the matching role by its code prefix.
 
 ---
 

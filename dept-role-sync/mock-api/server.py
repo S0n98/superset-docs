@@ -2,6 +2,7 @@
 so editing the file simulates the upstream system renaming a department."""
 import json
 import os
+import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DATA_FILE = os.environ.get("DATA_FILE", "/data/departments.json")
@@ -29,4 +30,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8000"))), Handler).serve_forever()
+    server = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8000"))), Handler)
+    # Optional HTTPS, for testing the sync job's TLS options.
+    if os.environ.get("TLS_CERT"):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(os.environ["TLS_CERT"], os.environ["TLS_KEY"])
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    server.serve_forever()

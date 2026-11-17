@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dept-role-sync
+description: CronJob that syncs Superset roles ("<deptcd> - <deptnm>") from a department API
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

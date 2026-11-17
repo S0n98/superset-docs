@@ -1,0 +1,162 @@
+{{- $secretName := include "dept-role-sync.secretName" . -}}
+{{- $deptCa := .Values.deptApi.tls.caBundle -}}
+{{- $ssCa := .Values.superset.tls.caBundle -}}
+{{- $deptCaOn := and (not .Values.deptApi.tls.insecureSkipVerify) (or $deptCa.configMap $deptCa.secret) -}}
+{{- $ssCaOn := and (not .Values.superset.tls.insecureSkipVerify) (or $ssCa.configMap $ssCa.secret) -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "dept-role-sync.fullname" . }}
+  labels:
+    {{- include "dept-role-sync.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  {{- with .Values.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  suspend: {{ .Values.suspend }}
+  concurrencyPolicy: {{ .Values.concurrencyPolicy }}
+  {{- with .Values.startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ . }}
+  {{- end }}
+  successfulJobsHistoryLimit: {{ .Values.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backoffLimit }}
+      {{- with .Values.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ . }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.ttlSecondsAfterFinished) }}
+      ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
+      {{- end }}
+      template:
+        metadata:
+          labels:
+            {{- include "dept-role-sync.selectorLabels" . | nindent 12 }}
+            {{- with .Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or .Values.podAnnotations .Values.vault.enabled }}
+          annotations:
+            {{- with .Values.podAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.vault.enabled }}
+            {{- include "dept-role-sync.vaultAnnotations" . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "dept-role-sync.serviceAccountName" . }}
+          automountServiceAccountToken: {{ .Values.vault.enabled }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hostAliases }}
+          hostAliases:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: sync
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              {{- with .Values.securityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              env:
+                - name: DEPT_API_URL
+                  value: {{ required "deptApi.url is required" .Values.deptApi.url | quote }}
+                - name: DEPT_API_AUTH_HEADER
+                  value: {{ .Values.deptApi.authHeader | quote }}
+                - name: DEPT_API_AUTH_SCHEME
+                  value: {{ .Values.deptApi.authScheme | quote }}
+                - name: DEPT_API_INSECURE_SKIP_VERIFY
+                  value: {{ .Values.deptApi.tls.insecureSkipVerify | quote }}
+                {{- if $deptCaOn }}
+                - name: DEPT_API_CA_BUNDLE
+                  value: /etc/dept-role-sync/dept-api-ca/ca.crt
+                {{- end }}
+                - name: SUPERSET_URL
+                  value: {{ required "superset.url is required" .Values.superset.url | quote }}
+                - name: SUPERSET_AUTH_PROVIDER
+                  value: {{ .Values.superset.authProvider | quote }}
+                - name: SUPERSET_INSECURE_SKIP_VERIFY
+                  value: {{ .Values.superset.tls.insecureSkipVerify | quote }}
+                {{- if $ssCaOn }}
+                - name: SUPERSET_CA_BUNDLE
+                  value: /etc/dept-role-sync/superset-ca/ca.crt
+                {{- end }}
+                - name: DRY_RUN
+                  value: {{ .Values.dryRun | quote }}
+                - name: LOG_LEVEL
+                  value: {{ .Values.logLevel | quote }}
+                - name: HTTP_TIMEOUT
+                  value: {{ .Values.httpTimeout | quote }}
+                {{- if .Values.vault.enabled }}
+                - name: SECRETS_FILES
+                  value: /vault/secrets/credentials.json
+                {{- end }}
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- if or $secretName .Values.extraEnvFrom }}
+              envFrom:
+                {{- if $secretName }}
+                - secretRef:
+                    name: {{ $secretName }}
+                {{- end }}
+                {{- with .Values.extraEnvFrom }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- end }}
+              {{- if or $deptCaOn $ssCaOn .Values.extraVolumeMounts }}
+              volumeMounts:
+                {{- if $deptCaOn }}
+                - name: dept-api-ca
+                  mountPath: /etc/dept-role-sync/dept-api-ca
+                  readOnly: true
+                {{- end }}
+                {{- if $ssCaOn }}
+                - name: superset-ca
+                  mountPath: /etc/dept-role-sync/superset-ca
+                  readOnly: true
+                {{- end }}
+                {{- with .Values.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- end }}
+              {{- with .Values.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+          {{- if or $deptCaOn $ssCaOn .Values.extraVolumes }}
+          volumes:
+            {{- if $deptCaOn }}
+            {{- include "dept-role-sync.caVolume" (dict "ca" $deptCa "name" "dept-api-ca") | trim | nindent 12 }}
+            {{- end }}
+            {{- if $ssCaOn }}
+            {{- include "dept-role-sync.caVolume" (dict "ca" $ssCa "name" "superset-ca") | trim | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

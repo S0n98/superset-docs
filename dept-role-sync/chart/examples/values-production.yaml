@@ -1,0 +1,36 @@
+# Production-shaped example: image from a registry, HTTPS everywhere with a
+# corporate CA, credentials from Vault. Adjust names/paths to your setup.
+image:
+  repository: registry.example.com/data/dept-role-sync
+  tag: "0.1.0"
+imagePullSecrets:
+  - name: registry-creds
+
+timeZone: Asia/Ho_Chi_Minh
+schedule: "*/15 * * * *"
+
+deptApi:
+  url: https://hr-api.example.com/api/departments
+  tls:
+    caBundle:
+      configMap: corporate-ca      # kubectl create configmap corporate-ca --from-file=ca.crt=...
+      key: ca.crt
+superset:
+  url: https://superset.example.com
+  authProvider: ldap
+  tls:
+    caBundle:
+      configMap: corporate-ca
+      key: ca.crt
+
+vault:
+  enabled: true
+  role: dept-role-sync
+  secretPath: secret/data/superset/dept-role-sync   # keys: DEPT_API_TOKEN, SUPERSET_USERNAME, SUPERSET_PASSWORD
+  kvVersion: 2
+
+extraEnv:
+  - name: HTTPS_PROXY
+    value: http://proxy.example.com:3128
+  - name: NO_PROXY
+    value: .svc,.cluster.local,10.0.0.0/8
