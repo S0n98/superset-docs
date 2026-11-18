@@ -249,7 +249,7 @@ format (job 0.2.0):
 - Dashboard grants and data: `bob` (`brcd 1060`, `department 41`) sees only
   the dashboard granted to `1060 - 41 - ...` and is denied data through
   the `1050 - 41` dashboard. This is part of the full access test,
-  `../data-access/demo/test_access.py` (41/41 checks pass).
+  `../data-access/demo/test_access.py` (81/81 checks pass).
 
 Job 0.1.0 (`<deptcd> - <deptnm>` format) was verified the same way before
 the format change: create, rename in place, login, dashboard grant.

@@ -11,7 +11,7 @@ every login:
 |---|---|---|---|
 | Functional role | `DSP_DATA_ANALYST` | directory group (`memberOf`) | What they can do: view, build charts, SQL Lab, manage |
 | Department role | `1050 - 41 - Văn phòng Đoàn Thanh niên` | `brcd` + `department` attributes; role synced from the department API | Which dashboards they can open (`DASHBOARD_RBAC`) |
-| Data roles | `AREA_HN`, `TYPE_KHCN` | `area` and `type` attributes | Which rows they see (RLS: `area = 'HN' AND data_type = 'KHCN'`) |
+| Data roles | `AREA_HN`, `RLS_TYPE_KHCN` | `area` and `type` attributes | Which rows they see (RLS: `area IN ('HN') AND CUSTTPCD IN (100, 300, 570)`; on datasets without an `area` column, `brcd IN ('1050') AND CUSTTPCD IN (…)`, the branch taken from the department role). Area and branch are each one per-user Jinja filter |
 
 Every rule, decision and open question is listed in
 [ACCESS-RULES.md](ACCESS-RULES.md). The scripts that create the roles and
@@ -50,31 +50,41 @@ directory entry into roles:
 ```
 memberOf  cn=dsp_data_analyst,...  --AUTH_ROLES_MAPPING-->  DSP_DATA_ANALYST
 brcd + department  1050 / 41       --name prefix match-->   "1050 - 41 - <current deptnm>"
-area  HN                           --AUTH_ROLES_MAPPING-->  AREA_HN   (RLS area = 'HN')
-type  KHCN                         --AUTH_ROLES_MAPPING-->  TYPE_KHCN (RLS data_type = 'KHCN')
+area  HN                           --AUTH_ROLES_MAPPING-->  AREA_HN   (Jinja RLS -> area IN ('HN'))
+type  KHCN                         --AUTH_ROLES_MAPPING-->  RLS_TYPE_KHCN (RLS CUSTTPCD IN (100, 300, 570))
+type  ALL (or all)                 --AUTH_ROLES_MAPPING-->  RLS_TYPE_ALL  (RLS CUSTTPCD IN (KHCN + KHDN codes))
+(department role "1050 - …")      --Jinja RLS filter-->     brcd IN ('1050'), only on datasets
+                                                            without an area column (no role)
 (always)                           --registration role-->   DSP_DATA_VIEWER
 ```
 
 ## Result once set up
 
 Test users in `lldap` (password `Passw0rd!`), the roles they get, and what
-they see on the demo dataset (5 rows: branches 1050/1070 in HN, 1060 in
-HCM, both data types):
+they see on the two demo datasets. Both hold the same 6 rows (branches
+1050/1070 in HN, 1060 in HCM; `CUSTTPCD` codes 100/300/570 = KHCN,
+200/510 = KHDN, and one row with code 999, in neither list);
+`demo_branch_detail` has no `area` column, so it's filtered by the user's
+branch:
 
-| User | Group → functional role | brcd / dept | area / type | Dashboards | Rows |
-|---|---|---|---|---|---|
-| `alice` | `superset_admins` → Admin | – | – | all | all 5, anywhere |
-| `henry` | `dsp_application_admin` → DSP_APPLICATION_ADMIN | – | – | none (R20 in ACCESS-RULES) | all 5, anywhere; SQL Lab |
-| `dave` | `dsp_data_analyst` → DSP_DATA_ANALYST | 1050 / 41 | HN / KHCN | Demo - 1050 - 41 | HN ∧ KHCN: 2 rows |
-| `carol` | (none) → DSP_DATA_VIEWER | 1050 / 41 | HN / KHDN | Demo - 1050 - 41 | HN ∧ KHDN: 1 row |
-| `bob` | `dsp_data_steward` → DSP_DATA_STEWARD | 1060 / 41 | HCM / KHDN | Demo - 1060 - 41 | HCM ∧ KHDN: 1 row |
-| `erin` | (none) → DSP_DATA_VIEWER | 1050 / 41 | – / – | Demo - 1050 - 41 | 0 rows (deny by default) |
-| `gina` | `dsp_data_analyst` → DSP_DATA_ANALYST | 1050 / 41 | HN / – | Demo - 1050 - 41 | 0 rows (no type) |
+| User | Group → functional role | brcd / dept | area / type | Dashboards | Rows, `demo_branch_data` | Rows, `demo_branch_detail` (no area) |
+|---|---|---|---|---|---|---|
+| `alice` | `superset_admins` → Admin | – | – | all | all 6, anywhere | all 6 |
+| `henry` | `dsp_application_admin` → DSP_APPLICATION_ADMIN | – | – | none (R20 in ACCESS-RULES) | all 6, anywhere; SQL Lab | all 6 |
+| `dave` | `dsp_data_analyst` → DSP_DATA_ANALYST | 1050 / 41 | HN / KHCN | Demo - 1050 - 41 | HN ∧ KHCN: 2 rows (1050, 1070) | 1050 ∧ KHCN: 1 row |
+| `carol` | (none) → DSP_DATA_VIEWER | 1050 / 41 | HN / KHDN | Demo - 1050 - 41 | HN ∧ KHDN: 1 row | 1050 ∧ KHDN: 1 row |
+| `bob` | `dsp_data_steward` → DSP_DATA_STEWARD | 1060 / 41 | HCM / KHDN | Demo - 1060 - 41 | HCM ∧ KHDN: 1 row | 1060 ∧ KHDN: 1 row |
+| `erin` | (none) → DSP_DATA_VIEWER | 1050 / 41 | – / – | Demo - 1050 - 41 | 0 rows (deny by default) | 0 rows (no type) |
+| `gina` | `dsp_data_analyst` → DSP_DATA_ANALYST | 1050 / 41 | HN / – | Demo - 1050 - 41 | 0 rows (no type) | 0 rows (no type) |
+| `ivan` | (none) → DSP_DATA_VIEWER | 1050 / 41 | – / KHCN | Demo - 1050 - 41 | 0 rows (no area) | 1050 ∧ KHCN: 1 row |
+| `jack` | (none) → DSP_DATA_VIEWER | 1060 / 41 | HCM / KHCN | Demo - 1060 - 41 | HCM ∧ KHCN: 1 row | 1060 ∧ KHCN: 1 row |
+| `kim` | (none) → DSP_DATA_VIEWER | 1050 / 41 | HN / `all` | Demo - 1050 - 41 | HN ∧ (KHCN ∪ KHDN): 3 rows, not code 999 | 1050 ∧ (KHCN ∪ KHDN): 2 rows |
 
 `python3 data-access/demo/test_access.py` checks all of this, including
 that non-admins get no data outside their granted dashboards, that viewers
-can't create content and that only admins can use SQL Lab: **41/41 checks
-pass** (2026-11-17). See [`data-access/README.md`](data-access/README.md).
+can't create content, that only admins can use SQL Lab, and that the
+chart-data cache never serves one user's rows to another: **81/81 checks
+pass** (2026-11-18). See [`data-access/README.md`](data-access/README.md).
 
 ---
 
@@ -122,14 +132,14 @@ gql() { curl -s -X POST http://localhost:17170/api/graphql \
 gql '{"query":"mutation{createUser(user:{id:\"alice\",email:\"alice@example.com\",firstName:\"Alice\",lastName:\"Admin\"}){id}}"}'
 gql '{"query":"mutation{createUser(user:{id:\"bob\",email:\"bob@example.com\",firstName:\"Bob\",lastName:\"KhcnHN\"}){id}}"}'
 gql '{"query":"mutation{createUser(user:{id:\"carol\",email:\"carol@example.com\",firstName:\"Carol\",lastName:\"KhcnHCM\"}){id}}"}'
-# ...and the same for dave, erin, gina, henry (see the "Result" table)
+# ...and the same for dave, erin, gina, henry, ivan, jack (see the "Result" table)
 ```
 
 Set passwords — the GraphQL API has no password mutation; lldap ships a
 dedicated CLI for it (present inside the container at `/app/lldap_set_password`):
 
 ```bash
-for u in alice bob carol dave erin gina henry; do
+for u in alice bob carol dave erin gina henry ivan jack; do
   docker exec lldap /app/lldap_set_password \
     --base-url "http://localhost:17170" \
     --admin-username admin --admin-password adminpass \
@@ -318,8 +328,9 @@ AUTH_ROLES_MAPPING = {
     # data roles, keyed "area:<value>" / "type:<value>"
     "area:HN": ["AREA_HN"],
     "area:HCM": ["AREA_HCM"],
-    "type:KHCN": ["TYPE_KHCN"],
-    "type:KHDN": ["TYPE_KHDN"],
+    "type:KHCN": ["RLS_TYPE_KHCN"],
+    "type:KHDN": ["RLS_TYPE_KHDN"],
+    "type:ALL": ["RLS_TYPE_ALL"],   # KHCN + KHDN codes; "all" works too (uppercased)
 }
 AUTH_ROLES_SYNC_AT_LOGIN = True
 
@@ -334,7 +345,8 @@ login:
    name, email and `AUTH_LDAP_GROUP_FIELD`. The class extends that
    search's attribute list with `ACCESS_ATTRIBUTES`.
 2. **Turns them into role keys:** `dept:<brcd> - <department>`,
-   `area:<area>` and `type:<type>`. Empty attributes give no key.
+   `area:<area>` and `type:<TYPE>` (uppercased, so `all` = `ALL`). Empty
+   attributes give no key.
 3. **Resolves the keys** in `get_roles_from_keys`:
    - `area:*` and `type:*` go through `AUTH_ROLES_MAPPING`. An unmapped
      value gives no role, and deny-by-default RLS then hides every row.
@@ -346,6 +358,29 @@ login:
 
 `get_roles_from_keys` is also what FAB's OAuth login uses, so the OIDC
 variant (Part H) reuses steps 2 and 3 unchanged.
+
+The same values block also sets up the **Jinja RLS filters** for area and
+branch (Part F):
+
+- Two macros, registered in `JINJA_CONTEXT_ADDONS`, that build a predicate
+  from the current user's roles, or `1 = 0` if there is none. Only values
+  matching `[A-Za-z0-9_]` are used.
+  - `user_role_filter(column, role_prefix)`: `user_role_filter('area',
+    'AREA_')` gives `area IN ('HN')` for a user with `AREA_HN`.
+  - `user_brcd_filter(column)`: the `<brcd>` of the user's department
+    role(s), e.g. `brcd IN ('1050')`.
+- `ENABLE_TEMPLATE_PROCESSING` in `FEATURE_FLAGS`, so RLS clauses are
+  rendered. (It also enables Jinja in SQL Lab and virtual-dataset SQL.)
+- `DataAccessSecurityManager.get_rls_cache_key`: when any RLS clause is a
+  template, appends the user's role names to the chart-data cache key.
+  Superset builds that key from the RLS clause text, which is identical
+  for every user; without the override one user's cached result is
+  served to another (reproduced, see ACCESS-RULES R13b).
+
+> The comment above the macros in the values file deliberately doesn't
+> spell out the clauses with double braces: the Superset chart passes
+> `configOverrides` through Helm's `tpl`, which fails on
+> `function "user_brcd_filter" not defined`.
 
 ### Gotcha: `AUTH_ROLES_SYNC_AT_LOGIN` recalculates roles from scratch on
 ### every login — including for accounts you didn't mean to touch
@@ -433,7 +468,7 @@ So all three kinds of role must exist before users log in:
 |---|---|
 | `DSP_*` functional roles | Imported once from a roles export: `superset fab import-roles --path dsp_roles.json` (run in a Superset pod; [`data-access/roles/dsp_roles.json`](data-access/roles/dsp_roles.json)) |
 | `<brcd> - <deptcd> - <deptnm>` department roles | The [`dept-role-sync`](dept-role-sync/README.md) CronJob, every 15 minutes |
-| `AREA_*`, `TYPE_*` data roles | [`data-access/setup_rls.py`](data-access/README.md), together with their RLS filters (Part F) |
+| `AREA_*`, `RLS_TYPE_*` data roles | [`data-access/setup_rls.py`](data-access/README.md), together with their RLS filters (Part F) |
 
 Department and data roles carry **no permissions**. Users still get data,
 because:
@@ -459,17 +494,33 @@ SUPERSET_URL=http://superset.default.svc.cluster.local:8088 \
 SUPERSET_USERNAME=admin SUPERSET_PASSWORD=... python3 setup_rls.py
 ```
 
+The script never deletes. If an earlier version created the per-value
+area filters (`RLS area = HN`, `RLS area = HCM`, `RLS area: deny by
+default`), delete them in *Settings → Row Level Security*: left in place,
+their `area = 'HN'` would be ORed into the Jinja filter's group.
+
 Resulting filters, attached automatically to **every dataset that has the
-filtered column**:
+filtered column**, except that the branch filter skips datasets that also
+have an `area` column (there, `area` already scopes the rows, and a branch
+filter would narrow "my area" to "my branch"):
 
 | Filter | Type | Roles | Group key | Clause |
 |---|---|---|---|---|
-| `RLS area = HN` | Regular | `AREA_HN` | `area` | `area = 'HN'` |
-| `RLS area = HCM` | Regular | `AREA_HCM` | `area` | `area = 'HCM'` |
-| `RLS area: deny by default` | **Base** | excludes `Admin`, `DSP_APPLICATION_ADMIN` | `area` | `1 = 0` |
-| `RLS type = KHCN` | Regular | `TYPE_KHCN` | `data_type` | `data_type = 'KHCN'` |
-| `RLS type = KHDN` | Regular | `TYPE_KHDN` | `data_type` | `data_type = 'KHDN'` |
-| `RLS type: deny by default` | **Base** | excludes `Admin`, `DSP_APPLICATION_ADMIN` | `data_type` | `1 = 0` |
+| `RLS area: per user` | **Base** | excludes `Admin`, `DSP_APPLICATION_ADMIN` | `area` | `{{ user_role_filter('area', 'AREA_') }}` |
+| `RLS type = KHCN` | Regular | `RLS_TYPE_KHCN` | `custtpcd` | `CUSTTPCD IN (100, 300, 570)` |
+| `RLS type = KHDN` | Regular | `RLS_TYPE_KHDN` | `custtpcd` | `CUSTTPCD IN (200, 510, 520, 530, 540, 550, 560, 600, 700, 800)` |
+| `RLS type = ALL` | Regular | `RLS_TYPE_ALL` | `custtpcd` | `CUSTTPCD IN (<union of the two lists>)` |
+| `RLS type: deny by default` | **Base** | excludes `Admin`, `DSP_APPLICATION_ADMIN` | `custtpcd` | `1 = 0` |
+| `RLS brcd: per user` | **Base** | excludes `Admin`, `DSP_APPLICATION_ADMIN` | `brcd` | `{{ user_brcd_filter('brcd') }}` |
+
+The two `per user` filters are Jinja templates that Superset renders per
+user: the area filter to `area IN ('<the user's AREA_* suffix>')`, the
+branch filter to `brcd IN ('<the user's brcd>')`, each `1 = 0` if the user
+has no value. One branch filter covers all ~1000 branches: there are no
+branch roles, and a new branch needs no setup. In *Settings → Row Level
+Security* you see the template; the rendered clause shows up in a chart's
+*View query* when logged in as a filtered user (not as an admin, who is
+excluded).
 
 How Superset combines them:
 
@@ -478,14 +529,21 @@ How Superset combines them:
 - Filters with the **same group key are ORed**; different group keys are
   ANDed.
 
-So for dave (`AREA_HN`, `TYPE_KHCN`) the query gets
-`(1 = 0 OR area = 'HN') AND (1 = 0 OR data_type = 'KHCN')`. A user missing
+The type code lists are in `rls_config.json`; `setup_rls.py` builds the
+`ALL` clause as their union, so a code in neither list stays hidden even
+from `RLS_TYPE_ALL`.
+
+So for dave (`AREA_HN`, `RLS_TYPE_KHCN`) the query gets
+`(area IN ('HN')) AND (1 = 0 OR CUSTTPCD IN (100, 300, 570))`. A user missing
 either attribute gets `1 = 0` for that group, which means no rows. Admins
-skip the Base filters and have no Regular ones, so they see everything.
+skip the Base filters and have no Regular ones, so they see everything. On
+a dataset without `area`, dave gets `(brcd IN ('1050')) AND (1 = 0 OR
+CUSTTPCD IN (100, 300, 570))` instead.
 
 Why deny by default: Regular filters only restrict users who hold their
-roles, so without the Base filters a user with no `area` attribute would
-see **every** row.
+roles, so without the `type` Base filter a user with no `type` attribute
+would see **every** type. The Jinja filters are Base filters that render
+`1 = 0` themselves.
 
 RLS does **not** apply to SQL Lab unless `RLS_IN_SQLLAB` is enabled (off by
 default). In this setup only `Admin` and `DSP_APPLICATION_ADMIN` have SQL
@@ -498,13 +556,14 @@ Lab, and both are unrestricted anyway.
 ```bash
 cd data-access
 export SUPERSET_URL=http://<superset> SUPERSET_USERNAME=admin SUPERSET_PASSWORD=...
-python3 demo/setup_demo.py    # dataset demo_branch_data, 2 charts, 2 dashboards
+python3 demo/setup_demo.py    # 2 datasets, 3 charts, 2 dashboards
 python3 setup_rls.py
 python3 demo/test_access.py   # logs in as each test user via LDAP
 ```
 
-`setup_demo.py` builds a virtual dataset over Trino (`VALUES`, no table to
-load) and two published dashboards:
+`setup_demo.py` builds two virtual datasets over Trino (`VALUES`, no table
+to load): `demo_branch_data` with an `area` column and `demo_branch_detail`
+without one. Two published dashboards show charts from both:
 
 - `Demo - 1050 - 41`, granted to role `1050 - 41 - …`
 - `Demo - 1060 - 41`, granted to role `1060 - 41 - …`
@@ -513,22 +572,36 @@ load) and two published dashboards:
 
 - their roles after login;
 - which demo dashboards they can list;
-- the rows returned through each dashboard, through a dashboard they
+- the rows returned from each dataset through each dashboard, through a dashboard they
   weren't granted (must be denied), and with no dashboard context (must be
   denied except for admins);
 - whether they can create content;
-- whether they can use SQL Lab.
+- whether they can use SQL Lab;
+- that the Jinja filters render `area IN ('HN')` and `brcd IN ('1050')`
+  for dave (and no `area IN` for ivan, who has no area), and that after
+  dave fills the cache, `jack` (1060/HCM, the same RLS filters otherwise)
+  gets a different cache key and only his own rows, on both datasets.
 
 ```
 PASS  dave   roles
 PASS  dave   dashboards visible ['Demo - 1050 - 41']
-PASS  dave   data via 'Demo - 1050 - 41': 2 rows
-PASS  dave   data via 'Demo - 1060 - 41': denied
-PASS  dave   data without dashboard: denied
+PASS  dave   data   via 'Demo - 1050 - 41': 2 rows
+PASS  dave   data   via 'Demo - 1060 - 41': denied
+PASS  dave   data   without dashboard: denied
+PASS  dave   detail via 'Demo - 1050 - 41': 1 rows
+PASS  dave   detail without dashboard: denied
 PASS  dave   create content: True
 PASS  dave   SQL Lab: False
 ...
-41/41 checks passed
+PASS  dave   area dataset SQL has area IN ('HN'), no brcd
+PASS  dave   area-less dataset SQL has brcd IN ('1050'), no area
+PASS  ivan   no AREA_* role: no area IN (...) in SQL
+PASS  cache  data: dave and jack get different cache keys
+PASS  cache  data: jack is not served dave's cached rows
+PASS  cache  data: caching is on (jack's repeat is a cache hit)
+PASS  cache  detail: dave and jack get different cache keys
+...
+81/81 checks passed
 ```
 
 ---
@@ -617,7 +690,7 @@ AUTH_ROLES_MAPPING = {
     "dsp_data_analyst": ["DSP_DATA_ANALYST"],
     "dsp_data_viewer": ["DSP_DATA_VIEWER"],
     "area:HN": ["AREA_HN"], "area:HCM": ["AREA_HCM"],
-    "type:KHCN": ["TYPE_KHCN"], "type:KHDN": ["TYPE_KHDN"],
+    "type:KHCN": ["RLS_TYPE_KHCN"], "type:KHDN": ["RLS_TYPE_KHDN"], "type:ALL": ["RLS_TYPE_ALL"],
 }
 
 OAUTH_PROVIDERS = [
@@ -773,7 +846,10 @@ Part C.
 
 **A user sees a granted dashboard, but every chart is empty** — RLS
 deny by default (Part F): the user is missing the `area` or `type`
-attribute, or has a value with no `AREA_*`/`TYPE_*` mapping. Check their
+attribute, or has a value with no `AREA_*`/`RLS_TYPE_*` mapping. On datasets
+without `area`, the user has no department role (the branch filter
+renders `1 = 0`), or `ENABLE_TEMPLATE_PROCESSING` is off (the clause isn't
+rendered, and the query fails). Check their
 roles in *Settings → List Users*. The fix belongs in the directory, not in
 Superset (roles are rebuilt at every login).
 

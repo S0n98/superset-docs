@@ -6,14 +6,26 @@
       "column": "area",
       "group_key": "area",
       "role_prefix": "AREA_",
-      "values": ["HN", "HCM"]
+      "values": ["HN", "HCM"],
+      "clause": "{{ user_role_filter('area', 'AREA_') }}"
     },
     {
       "name": "type",
-      "column": "data_type",
-      "group_key": "data_type",
-      "role_prefix": "TYPE_",
-      "values": ["KHCN", "KHDN"]
+      "column": "CUSTTPCD",
+      "group_key": "custtpcd",
+      "role_prefix": "RLS_TYPE_",
+      "values": {
+        "KHCN": [100, 300, 570],
+        "KHDN": [200, 510, 520, 530, 540, 550, 560, 600, 700, 800]
+      },
+      "all_values": ["ALL"]
+    },
+    {
+      "name": "brcd",
+      "column": "brcd",
+      "group_key": "brcd",
+      "clause": "{{ user_brcd_filter('brcd') }}",
+      "unless_columns": ["area"]
     }
   ],
   "datasets": "auto"

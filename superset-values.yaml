@@ -58,8 +58,12 @@ configOverrides:
     #   brcd + department   -> "<brcd> - <deptcd> - <deptnm>" role, synced
     #                          from the department API by dept-role-sync;
     #                          grants dashboards (DASHBOARD_RBAC)
-    #   area                -> AREA_<area> role -> RLS  area = '<area>'
-    #   type                -> TYPE_<type> role -> RLS  data_type = '<type>'
+    #   area                -> AREA_<area> role -> RLS  area IN ('<area>'), one
+    #                          Jinja filter reading the user's AREA_* roles
+    #   type                -> RLS_TYPE_<type> role -> RLS  CUSTTPCD IN (<codes
+    #                          of KHCN / KHDN>); ALL -> union of both lists
+    #   (department role)   -> its <brcd> -> RLS  brcd = '<brcd>', one Jinja
+    #                          filter, only on datasets without an area column
     # Attribute names are configurable below; for OIDC they are claim names.
     AUTH_LDAP_GROUP_FIELD = "memberOf"
     ACCESS_ATTRIBUTES = {"brcd": "brcd", "department": "department", "area": "area", "type": "type"}
@@ -77,14 +81,50 @@ configOverrides:
         # row-level security, from the area / type attributes
         "area:HN": ["AREA_HN"],
         "area:HCM": ["AREA_HCM"],
-        "type:KHCN": ["TYPE_KHCN"],
-        "type:KHDN": ["TYPE_KHDN"],
+        "type:KHCN": ["RLS_TYPE_KHCN"],
+        "type:KHDN": ["RLS_TYPE_KHDN"],
+        "type:ALL": ["RLS_TYPE_ALL"],   # KHCN + KHDN codes
     }
 
     AUTH_ROLES_SYNC_AT_LOGIN = True
 
     import logging as _logging
+    import re as _re
     from superset.security import SupersetSecurityManager
+
+    # Per-user RLS macros. Each RLS filter's clause is one Jinja call (in
+    # double braces; not written out here because Helm's tpl would
+    # evaluate it), rendered per user from their roles:
+    #   user_role_filter('area', 'AREA_')  -> area IN ('HN')    (AREA_HN role)
+    #   user_brcd_filter('brcd')           -> brcd IN ('1050')  ("1050 - 41 - ..." role)
+    # No matching role -> 1 = 0 (no rows). Needs ENABLE_TEMPLATE_PROCESSING.
+    _DEPT_ROLE_BRCD = _re.compile(r"^([A-Za-z0-9]+) - \S+ - ")
+    _SQL_IDENTIFIER = _re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    _SAFE_VALUE = _re.compile(r"^[A-Za-z0-9_]+$")
+
+    def _user_role_names():
+        from flask import g
+        return sorted(r.name for r in (getattr(getattr(g, "user", None), "roles", None) or []))
+
+    def _in_predicate(column, values):
+        # Values are restricted to [A-Za-z0-9_], so quoting them is safe.
+        if not _SQL_IDENTIFIER.match(column):
+            raise ValueError(f"invalid column name {column!r}")
+        values = sorted({v for v in values if _SAFE_VALUE.match(v)})
+        if not values:
+            return "1 = 0"
+        return f"{column} IN ({', '.join(repr(v) for v in values)})"
+
+    def user_role_filter(column, role_prefix):
+        """column IN (<suffixes of the user's roles named role_prefix*>)."""
+        return _in_predicate(column, [n[len(role_prefix):] for n in _user_role_names() if n.startswith(role_prefix)])
+
+    def user_brcd_filter(column="brcd"):
+        """column IN (<brcd of the user's department roles>)."""
+        return _in_predicate(column, [m.group(1) for m in map(_DEPT_ROLE_BRCD.match, _user_role_names()) if m])
+
+    JINJA_CONTEXT_ADDONS = {**globals().get("JINJA_CONTEXT_ADDONS", {}),
+                            "user_role_filter": user_role_filter, "user_brcd_filter": user_brcd_filter}
 
     class DataAccessSecurityManager(SupersetSecurityManager):
         """Adds attribute-driven roles on top of FAB's group mapping.
@@ -102,7 +142,7 @@ configOverrides:
             if area:
                 keys.append(f"area:{area}")
             if data_type:
-                keys.append(f"type:{data_type}")
+                keys.append(f"type:{data_type.upper()}")  # "all" == "ALL"
             return keys
 
         def get_roles_from_keys(self, role_keys):
@@ -127,6 +167,16 @@ configOverrides:
                         prefix, [r.name for r in matches],
                     )
             return roles
+
+        def get_rls_cache_key(self, datasource):
+            # Superset keys cached chart data on the RLS clause *text*, which
+            # is the same for every user of a Jinja filter. The macros
+            # render from the user's roles, so add those to the key, or one
+            # area's/branch's cached result is served to another.
+            keys = super().get_rls_cache_key(datasource)
+            if any("{" + "{" in k for k in keys):
+                keys.append("user_roles=" + "|".join(_user_role_names()))
+            return keys
 
         def _search_ldap(self, ldap, con, username):
             # FAB only requests name/email/group-field attributes. Ask for
@@ -160,7 +210,10 @@ configOverrides:
     CUSTOM_SECURITY_MANAGER = DataAccessSecurityManager
 
     # Lets admins grant a dashboard to roles (dashboard Properties -> Roles).
-    FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "DASHBOARD_RBAC": True}
+    # ENABLE_TEMPLATE_PROCESSING: renders Jinja in RLS clauses (the branch
+    # filter). It also enables Jinja in SQL Lab and virtual-dataset SQL.
+    FEATURE_FLAGS = {**globals().get("FEATURE_FLAGS", {}), "DASHBOARD_RBAC": True,
+                     "ENABLE_TEMPLATE_PROCESSING": True}
 
     RECAPTCHA_PUBLIC_KEY = None
     import logging
